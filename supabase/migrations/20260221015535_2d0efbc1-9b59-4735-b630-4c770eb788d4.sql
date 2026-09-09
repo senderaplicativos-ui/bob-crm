@@ -1,0 +1,1 @@
+DELETE FROM instancias WHERE evolution_instance_name IN ('ana27', 'ana-27');

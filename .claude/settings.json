@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk ls *)",
+      "Bash(rtk git *)",
+      "Bash(rtk gh *)",
+      "Bash(git config *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" https://api.github.com/repos/senderaplicativos-ui/bob-crm)",
+      "Bash(echo \"---EXIT:$?---\")"
+    ]
+  }
+}

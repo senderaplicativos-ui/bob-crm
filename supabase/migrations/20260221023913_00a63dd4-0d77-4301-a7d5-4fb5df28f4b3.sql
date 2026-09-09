@@ -1,0 +1,1 @@
+DELETE FROM instancias WHERE id = 'adefb92a-258e-4079-becb-f3550de78875';

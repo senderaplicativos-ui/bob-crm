@@ -1,0 +1,1 @@
+ALTER TABLE meta_config ADD COLUMN test_event_code text;

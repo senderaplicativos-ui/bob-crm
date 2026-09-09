@@ -1,0 +1,1 @@
+DELETE FROM instancias WHERE nome = 'Ana1927' AND ativo = false;
