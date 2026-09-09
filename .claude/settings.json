@@ -6,7 +6,8 @@
       "Bash(rtk gh *)",
       "Bash(git config *)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" https://api.github.com/repos/senderaplicativos-ui/bob-crm)",
-      "Bash(echo \"---EXIT:$?---\")"
+      "Bash(echo \"---EXIT:$?---\")",
+      "Bash(grep -c \"^\\\\.env$\")"
     ]
   }
 }
