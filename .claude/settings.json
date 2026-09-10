@@ -7,7 +7,11 @@
       "Bash(git config *)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" https://api.github.com/repos/senderaplicativos-ui/bob-crm)",
       "Bash(echo \"---EXIT:$?---\")",
-      "Bash(grep -c \"^\\\\.env$\")"
+      "Bash(grep -c \"^\\\\.env$\")",
+      "Bash(git rev-list *)",
+      "Bash(git ls-remote *)",
+      "Bash(git ls-tree *)",
+      "Bash(grep -c '^\\\\.env$')"
     ]
   }
 }
