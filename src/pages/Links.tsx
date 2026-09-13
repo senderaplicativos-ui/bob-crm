@@ -27,8 +27,6 @@ interface LinkRastreavel {
   criado_em: string | null;
 }
 
-const WEBHOOK_BASE = "https://whatsapp-webhook-liart.vercel.app";
-
 const Links = () => {
   const { selected } = useInstance();
   const navigate = useNavigate();
@@ -83,7 +81,7 @@ const Links = () => {
     if (campaign) params.set("c", campaign);
     if (ad) params.set("a", ad);
     if (mensagem) params.set("t", mensagem);
-    return `${WEBHOOK_BASE}/go/${selected.evolution_instance_name}?${params.toString()}`;
+    return `${window.location.origin}/go/${selected.evolution_instance_name}?${params.toString()}`;
   };
 
   const handleSave = async () => {
@@ -143,7 +141,7 @@ const Links = () => {
     if (editCampaign) params.set("c", editCampaign);
     if (editAd) params.set("a", editAd);
     if (editMensagem) params.set("t", editMensagem);
-    return `${WEBHOOK_BASE}/go/${selected.evolution_instance_name}?${params.toString()}`;
+    return `${window.location.origin}/go/${selected.evolution_instance_name}?${params.toString()}`;
   };
 
   const handleEditSave = async () => {
