@@ -3,8 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useInstance, Instancia } from "@/contexts/InstanceContext";
 import { Button } from "@/components/ui/button";
 import { Plus, Wifi, WifiOff, RefreshCw } from "lucide-react";
-
-const WEBHOOK_BASE = "https://whatsapp-webhook-liart.vercel.app";
+import { callEvolution } from "@/lib/evolution";
 
 const InstanceSelect = () => {
   const { instancias, setSelected, refreshInstancias, loading } = useInstance();
@@ -22,14 +21,13 @@ const InstanceSelect = () => {
           return;
         }
         try {
-          const res = await fetch(`${WEBHOOK_BASE}/api/instance/status/${inst.evolution_instance_name}?t=${Date.now()}`);
-          if (res.ok || res.status === 304) {
-            const data = await res.json();
-            const state = data?.instance?.state || data?.state;
-            results[inst.id] = state === "open";
-          } else {
-            results[inst.id] = false;
-          }
+          const res = await callEvolution({
+            action: "status",
+            instanceName: inst.evolution_instance_name,
+            evolutionUrl: inst.evolution_url || "",
+            evolutionApiKey: inst.evolution_api_key || "",
+          });
+          results[inst.id] = res.ok && res.state === "open";
         } catch {
           results[inst.id] = false;
         }
