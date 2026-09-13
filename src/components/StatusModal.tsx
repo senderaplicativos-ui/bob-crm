@@ -31,10 +31,6 @@ export function StatusModal({ open, onOpenChange }: StatusModalProps) {
   const [alertaAtivo, setAlertaAtivo] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const webhookUrl = selected?.evolution_url
-    ? selected.evolution_url.replace(/\/+$/, "")
-    : "";
-
   const configKey = selected ? `alerta_erros_${selected.id}` : null;
 
   const fetchAlertConfig = useCallback(async () => {
@@ -51,32 +47,26 @@ export function StatusModal({ open, onOpenChange }: StatusModalProps) {
     if (!open) return;
     setLoading(true);
     try {
-      const res = await fetch(
-        `https://whatsapp-webhook-liart.vercel.app/api/erros/recentes`
-      );
-      if (!res.ok) throw new Error("offline");
-      const data = await res.json();
-      const list: LogErro[] = data.erros || [];
-      setErros(list);
-      setStatus(list.length > 0 ? "error" : "ok");
-    } catch {
-      // Fallback: read directly from supabase
+      // Lê os erros das últimas 24h direto do Mongo (via /api/query).
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("log_erros")
         .select("*")
         .gte("criado_em", since)
         .order("criado_em", { ascending: false })
         .limit(50);
-      if (data && data.length > 0) {
-        setErros(data as LogErro[]);
-        setStatus("error");
-      } else if (data) {
+
+      if (error || !data) {
         setErros([]);
-        setStatus("ok");
-      } else {
         setStatus("offline");
+      } else {
+        const list = data as LogErro[];
+        setErros(list);
+        setStatus(list.length > 0 ? "error" : "ok");
       }
+    } catch {
+      setErros([]);
+      setStatus("offline");
     }
     setLoading(false);
   }, [open]);
@@ -89,16 +79,15 @@ export function StatusModal({ open, onOpenChange }: StatusModalProps) {
   }, [open, fetchErros, fetchAlertConfig]);
 
   const handleClearErrors = async () => {
-    try {
-      await fetch(`https://whatsapp-webhook-liart.vercel.app/api/erros/limpar`, {
-        method: "DELETE",
-      });
-    } catch {
-      // fallback: clear from supabase directly
-      await supabase.from("log_erros").delete().lt(
-        "criado_em",
-        new Date().toISOString()
-      );
+    // Apaga os erros já registrados (tudo até agora), direto no Mongo.
+    const { error } = await supabase
+      .from("log_erros")
+      .delete()
+      .lt("criado_em", new Date().toISOString());
+
+    if (error) {
+      toast({ title: "Erro ao limpar erros", variant: "destructive" });
+      return;
     }
     setErros([]);
     setStatus("ok");
@@ -144,7 +133,7 @@ export function StatusModal({ open, onOpenChange }: StatusModalProps) {
           ) : (
             <>
               <WifiOff className="h-6 w-6 text-yellow-500" />
-              <span className="text-sm font-medium">Não foi possível conectar ao webhook</span>
+              <span className="text-sm font-medium">Não foi possível consultar o log de erros</span>
             </>
           )}
         </div>

@@ -86,18 +86,8 @@ const Conversations = () => {
     setConversas((prev) =>
       prev.map((c) => (c.id === conversa.id ? { ...c, status: newStatus } : c))
     );
-    if (selected) {
-      fetch("https://whatsapp-webhook-liart.vercel.app/api/meta/evento", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          instancia_id: selected.id,
-          conversa_id: conversa.id,
-          telefone: conversa.telefone,
-          estagio_nome: newStatus,
-        }),
-      }).catch((err) => console.log("Meta event error:", err));
-    }
+    // A integração com o Meta (envio de evento por mudança de estágio) será
+    // refeita dentro do próprio bob-crm. O backend antigo foi removido.
   };
 
   const fetchData = async () => {

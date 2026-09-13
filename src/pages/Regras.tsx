@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useInstance } from "@/contexts/InstanceContext";
@@ -52,23 +52,43 @@ const Regras = () => {
   const { aplicarRegrasGrupo, toggleConfig } = useGroupConfig();
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
 
-  const fetchRegras = async () => {
-    if (!selected) return;
-    setLoading(true);
-    const { data, error } = await supabase
-      .from("regras")
-      .select("*")
-      .eq("instancia_id", selected.id)
-      .order("criado_em", { ascending: false });
-    if (error) {
-      console.error("Erro ao buscar regras:", error);
-      toast({ title: "Erro ao buscar regras", description: error.message, variant: "destructive" });
+  const fetchRegras = useCallback(async () => {
+    // Sem instância selecionada não há o que buscar: zera a lista e sai do
+    // loading (antes o return adiantado deixava o spinner preso para sempre).
+    if (!selected) {
+      setRegras([]);
+      setLoading(false);
+      return;
     }
-    setRegras((data as Regra[]) || []);
-    setLoading(false);
-  };
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("regras")
+        .select("*")
+        .eq("instancia_id", selected.id)
+        .order("criado_em", { ascending: false });
+      if (error) {
+        console.error("Erro ao buscar regras:", error);
+        toast({ title: "Erro ao buscar regras", description: error.message, variant: "destructive" });
+        setRegras([]);
+        return;
+      }
+      setRegras((data as Regra[]) || []);
+    } catch (err) {
+      // Falha de rede/API: mostra estado vazio em vez de travar o loading.
+      console.error("Erro ao buscar regras:", err);
+      toast({
+        title: "Erro ao buscar regras",
+        description: err instanceof Error ? err.message : "Falha de conexão com a API",
+        variant: "destructive",
+      });
+      setRegras([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [selected, toast]);
 
-  useEffect(() => { fetchRegras(); }, [selected?.id]);
+  useEffect(() => { fetchRegras(); }, [fetchRegras]);
 
   const openNew = () => { setEditingId(null); setForm(emptyForm); setDialogOpen(true); };
   const openEdit = (r: Regra) => {

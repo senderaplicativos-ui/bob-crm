@@ -104,18 +104,9 @@ const Funil = () => {
     if (error) {
       toast({ title: "Erro ao mover", variant: "destructive" });
       fetchConversas();
-    } else if (selected && conversa) {
-      fetch("https://whatsapp-webhook-liart.vercel.app/api/meta/evento", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          instancia_id: selected.id,
-          conversa_id: conversaId,
-          telefone: conversa.telefone,
-          estagio_nome: newStatus,
-        }),
-      }).catch((err) => console.log("Meta event error:", err));
     }
+    // Nota: o envio de evento para o Meta será reimplementado dentro do
+    // próprio bob-crm (antes ia para o backend externo, já removido).
   };
 
   if (stagesLoading || loading) {
