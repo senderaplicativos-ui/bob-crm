@@ -12,8 +12,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction,
 } from "@/components/ui/alert-dialog";
 import { Wifi, WifiOff, QrCode, Copy, LogOut, Trash2, RefreshCw, Loader2, Plus, CheckCircle2, Pencil, Eye, EyeOff } from "lucide-react";
-
-const WEBHOOK_BASE = "https://whatsapp-webhook-liart.vercel.app";
+import { callEvolution, isAlreadyExists } from "@/lib/evolution";
 
 const Conexoes = () => {
   const navigate = useNavigate();
@@ -68,15 +67,17 @@ const Conexoes = () => {
     const results: Record<string, boolean> = {};
     await Promise.all(
       ativas.map(async (inst) => {
-        if (!inst.evolution_instance_name) { results[inst.id] = false; return; }
-        try {
-          const res = await fetch(`${WEBHOOK_BASE}/api/instance/status/${inst.evolution_instance_name}?t=${Date.now()}`);
-          if (res.ok || res.status === 304) {
-            const data = await res.json();
-            const state = data?.instance?.state || data?.state;
-            results[inst.id] = state === "open";
-          } else { results[inst.id] = false; }
-        } catch { results[inst.id] = false; }
+        if (!inst.evolution_instance_name || !inst.evolution_url || !inst.evolution_api_key) {
+          results[inst.id] = false;
+          return;
+        }
+        const r = await callEvolution({
+          action: "status",
+          instanceName: inst.evolution_instance_name,
+          evolutionUrl: inst.evolution_url,
+          evolutionApiKey: inst.evolution_api_key,
+        });
+        results[inst.id] = r.ok && r.state === "open";
       })
     );
     setStatuses(results);
@@ -88,42 +89,60 @@ const Conexoes = () => {
   const openQr = async (inst: Instancia) => {
     if (!inst.evolution_instance_name) return;
     setQrDialog({ open: true, name: inst.evolution_instance_name, qr: null, loading: true });
-    try {
-      const res = await fetch(`${WEBHOOK_BASE}/api/instance/connect/${inst.evolution_instance_name}`);
-      if (res.ok) {
-        const data = await res.json();
-        setQrDialog((prev) => ({ ...prev, qr: data?.qrcode || data?.base64 || null, loading: false }));
-      } else {
-        setQrDialog((prev) => ({ ...prev, loading: false }));
-        toast({ title: "Erro ao gerar QR Code", variant: "destructive" });
-      }
-    } catch {
+    const res = await callEvolution({
+      action: "connect",
+      instanceName: inst.evolution_instance_name,
+      evolutionUrl: inst.evolution_url || "",
+      evolutionApiKey: inst.evolution_api_key || "",
+    });
+    if (res.ok && res.qrcode) {
+      setQrDialog((prev) => ({ ...prev, qr: res.qrcode, loading: false }));
+    } else {
       setQrDialog((prev) => ({ ...prev, loading: false }));
+      toast({ title: "Erro ao gerar QR Code", description: res.error?.message, variant: "destructive" });
     }
   };
 
   const copyLink = (name: string) => {
-    navigator.clipboard.writeText(`${WEBHOOK_BASE}/connect/${name}`);
+    navigator.clipboard.writeText(`${window.location.origin}/conexoes?instance=${name}`);
     toast({ title: "Link copiado!" });
   };
 
   const logout = async (inst: Instancia) => {
     if (!inst.evolution_instance_name) return;
-    try {
-      await fetch(`${WEBHOOK_BASE}/api/instance/logout/${inst.evolution_instance_name}`, { method: "DELETE" });
+    const res = await callEvolution({
+      action: "logout",
+      instanceName: inst.evolution_instance_name,
+      evolutionUrl: inst.evolution_url || "",
+      evolutionApiKey: inst.evolution_api_key || "",
+    });
+    if (res.ok) {
       toast({ title: "Desconectado" });
       setLogoutTarget(null);
       checkStatuses();
-    } catch {
-      toast({ title: "Erro ao desconectar", variant: "destructive" });
+    } else {
+      toast({ title: "Erro ao desconectar", description: res.error?.message, variant: "destructive" });
     }
   };
 
   const remove = async (inst: Instancia) => {
     if (!inst.evolution_instance_name) return;
     try {
-      await fetch(`${WEBHOOK_BASE}/api/instance/delete/${inst.evolution_instance_name}`, { method: "DELETE" });
-      await supabase.from("instancias").update({ ativo: false }).eq("id", inst.id);
+      // Apaga na EVO (ignora erro se ela já não existir lá).
+      await callEvolution({
+        action: "delete",
+        instanceName: inst.evolution_instance_name,
+        evolutionUrl: inst.evolution_url || "",
+        evolutionApiKey: inst.evolution_api_key || "",
+      });
+      // Hard delete no Mongo: remove o documento de verdade, não deixa ativo:false.
+      const { error } = await supabase.from("instancias").delete().eq("id", inst.id);
+      if (error) {
+        toast({ title: "Erro ao remover do banco", description: error.message, variant: "destructive" });
+        return;
+      }
+      // Limpa os estágios de funil órfãos dessa instância.
+      await supabase.from("estagios_funil").delete().eq("instancia_id", inst.id);
       toast({ title: "Instância removida" });
       setRemoveTarget(null);
       await refreshInstancias();
@@ -140,10 +159,14 @@ const Conexoes = () => {
     if (!inst.evolution_instance_name) return;
     setReconnecting(inst.id);
     try {
-      const res = await fetch(`${WEBHOOK_BASE}/api/instance/restart/${inst.evolution_instance_name}`, { method: "PUT" });
+      const res = await callEvolution({
+        action: "restart",
+        instanceName: inst.evolution_instance_name,
+        evolutionUrl: inst.evolution_url || "",
+        evolutionApiKey: inst.evolution_api_key || "",
+      });
       if (res.ok) {
-        const data = await res.json();
-        if (data?.state === "open") {
+        if (res.state === "open") {
           toast({ title: "WhatsApp reconectado com sucesso!" });
           setStatuses((prev) => ({ ...prev, [inst.id]: true }));
           await refreshInstancias();
@@ -176,23 +199,21 @@ const Conexoes = () => {
     if (!editTarget) return;
     setEditSaving(true);
     try {
-      const res = await fetch(`${WEBHOOK_BASE}/api/instance/edit/${editTarget.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const { error } = await supabase
+        .from("instancias")
+        .update({
           nome: editForm.nome,
           evolution_url: editForm.evolutionUrl,
           evolution_api_key: editForm.evolutionApiKey,
           evolution_instance_name: editForm.instanceName,
-        }),
-      });
-      if (res.ok) {
+        })
+        .eq("id", editTarget.id);
+      if (!error) {
         toast({ title: "Instância atualizada com sucesso" });
         setEditTarget(null);
         await refreshInstancias();
       } else {
-        const errText = await res.text();
-        toast({ title: "Erro ao atualizar", description: errText, variant: "destructive" });
+        toast({ title: "Erro ao atualizar", description: error.message, variant: "destructive" });
       }
     } catch {
       toast({ title: "Erro ao atualizar", variant: "destructive" });
@@ -201,21 +222,24 @@ const Conexoes = () => {
   };
 
   // ---- Add client logic ----
-  const saveToSupabaseOnly = async () => {
+  // Cadastra no Mongo uma instância que já existe na EVO (sem recriar na EVO),
+  // cria os estágios padrão do funil e busca o QR pelo proxy.
+  const saveInstanceOnly = async () => {
     setSaving(true);
     const { data, error } = await supabase.from("instancias").insert({
       nome: form.nome,
       evolution_instance_name: form.instanceName,
       evolution_url: form.evolutionUrl,
       evolution_api_key: form.evolutionApiKey,
+      ativo: true,
     }).select().single();
-    if (error) {
-      toast({ title: "Erro ao salvar", description: error.message, variant: "destructive" });
+    if (error || !data) {
+      toast({ title: "Erro ao salvar", description: error?.message, variant: "destructive" });
       setSaving(false);
       return;
     }
     setCreatedId(data.id);
-    // Create default funnel stages for the new instance
+    // Cria os estágios padrão do funil para a nova instância
     const { data: existingStages } = await supabase.from("estagios_funil").select("id").eq("instancia_id", data.id).limit(1);
     if (!existingStages || existingStages.length === 0) {
       await supabase.from("estagios_funil").insert([
@@ -227,16 +251,42 @@ const Conexoes = () => {
     }
     setAlreadyExistsPrompt(false);
     await refreshInstancias();
-    try {
-      const qrRes = await fetch(`${WEBHOOK_BASE}/api/instance/connect/${form.instanceName}`);
-      if (qrRes.ok) {
-        const qrResult = await qrRes.json();
-        setQrData(qrResult?.qrcode || qrResult?.base64 || null);
-      }
-    } catch {}
+    const qrRes = await callEvolution({
+      action: "connect",
+      instanceName: form.instanceName,
+      evolutionUrl: form.evolutionUrl,
+      evolutionApiKey: form.evolutionApiKey,
+    });
+    if (qrRes.ok) setQrData(qrRes.qrcode);
     setAddStep("qr");
     startPolling();
     setSaving(false);
+  };
+
+  // Grava a instância no Mongo (via shim) e cria os estágios padrão do funil.
+  // Retorna o id gerado, ou null em caso de erro (já exibindo o toast).
+  const persistInstance = async (): Promise<string | null> => {
+    const { data, error } = await supabase.from("instancias").insert({
+      nome: form.nome,
+      evolution_instance_name: form.instanceName,
+      evolution_url: form.evolutionUrl,
+      evolution_api_key: form.evolutionApiKey,
+      ativo: true,
+    }).select().single();
+    if (error || !data) {
+      toast({ title: "Erro ao salvar no CRM", description: error?.message, variant: "destructive" });
+      return null;
+    }
+    const { data: existingStages } = await supabase.from("estagios_funil").select("id").eq("instancia_id", data.id).limit(1);
+    if (!existingStages || existingStages.length === 0) {
+      await supabase.from("estagios_funil").insert([
+        { nome: "NOVO", ordem: 1, cor: "#6B7280", instancia_id: data.id },
+        { nome: "LEAD", ordem: 2, cor: "#3B82F6", instancia_id: data.id },
+        { nome: "CONTATO", ordem: 3, cor: "#F59E0B", instancia_id: data.id },
+        { nome: "COMPROU", ordem: 4, cor: "#10B981", instancia_id: data.id },
+      ]);
+    }
+    return data.id;
   };
 
   const handleCreate = async () => {
@@ -246,11 +296,11 @@ const Conexoes = () => {
     }
     setSaving(true);
     try {
+      // Já existe no CRM (Mongo)?
       const { data: existing } = await supabase
         .from("instancias")
         .select("id")
         .eq("evolution_instance_name", form.instanceName)
-        .eq("ativo", true)
         .maybeSingle();
       if (existing) {
         toast({ title: "Já existe uma instância com esse nome", variant: "destructive" });
@@ -258,69 +308,52 @@ const Conexoes = () => {
         return;
       }
 
-      let evolutionResult: any = null;
-      try {
-        const res = await fetch(`${WEBHOOK_BASE}/api/instance/create`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            instanceName: form.instanceName,
-            evolutionUrl: form.evolutionUrl,
-            evolutionApiKey: form.evolutionApiKey,
-            clientName: form.nome,
-          }),
-        });
+      // 1) Cria a instância na EVO pelo proxy do próprio bob-crm.
+      const evo = await callEvolution({
+        action: "create",
+        instanceName: form.instanceName,
+        evolutionUrl: form.evolutionUrl,
+        evolutionApiKey: form.evolutionApiKey,
+        clientName: form.nome,
+      });
 
-        if (!res.ok) {
-          const errText = await res.text();
-          if (res.status === 400 && errText.toLowerCase().includes("already")) {
-            setAlreadyExistsPrompt(true);
-            setSaving(false);
-            return;
-          }
-          toast({ title: "Erro ao criar instância", description: errText, variant: "destructive" });
+      if (!evo.ok) {
+        // Se já existe na EVO, oferece cadastrar só no CRM.
+        if (isAlreadyExists(evo.error)) {
+          setAlreadyExistsPrompt(true);
           setSaving(false);
           return;
         }
-        evolutionResult = await res.json();
-      } catch (fetchErr: any) {
-        toast({ title: "Erro de rede ao criar instância", description: fetchErr.message, variant: "destructive" });
+        toast({ title: "Erro ao criar instância", description: evo.error?.message, variant: "destructive" });
         setSaving(false);
         return;
       }
 
-      await refreshInstancias();
-      const newId = evolutionResult?.supabaseId || null;
+      // 2) Grava no Mongo (o proxy só fala com a EVO).
+      const newId = await persistInstance();
+      if (!newId) {
+        setSaving(false);
+        return;
+      }
       setCreatedId(newId);
-      // Create default funnel stages for the new instance
-      if (newId) {
-        const { data: existingStages } = await supabase.from("estagios_funil").select("id").eq("instancia_id", newId).limit(1);
-        if (!existingStages || existingStages.length === 0) {
-          await supabase.from("estagios_funil").insert([
-            { nome: "NOVO", ordem: 1, cor: "#6B7280", instancia_id: newId },
-            { nome: "LEAD", ordem: 2, cor: "#3B82F6", instancia_id: newId },
-            { nome: "CONTATO", ordem: 3, cor: "#F59E0B", instancia_id: newId },
-            { nome: "COMPROU", ordem: 4, cor: "#10B981", instancia_id: newId },
-          ]);
-        }
-      }
+
       toast({ title: "Instância criada com sucesso!" });
-      try { await refreshInstancias(); } catch {}
-      closeAddForm();
-      
-      try {
-        let qr: string | null = evolutionResult?.qrcode || null;
-        if (!qr) {
-          const qrRes = await fetch(`${WEBHOOK_BASE}/api/instance/connect/${form.instanceName}`);
-          if (qrRes.ok) {
-            const qrResult = await qrRes.json();
-            qr = qrResult?.qrcode || qrResult?.base64 || null;
-          }
-        }
-        setQrDialog({ open: true, name: form.instanceName, qr, loading: false });
-      } catch {
-        setQrDialog({ open: true, name: form.instanceName, qr: null, loading: false });
+      await refreshInstancias();
+
+      // 3) Mostra o QR: usa o do create ou busca pelo connect.
+      let qr: string | null = evo.qrcode;
+      if (!qr) {
+        const qrRes = await callEvolution({
+          action: "connect",
+          instanceName: form.instanceName,
+          evolutionUrl: form.evolutionUrl,
+          evolutionApiKey: form.evolutionApiKey,
+        });
+        if (qrRes.ok) qr = qrRes.qrcode;
       }
+      setQrData(qr);
+      setAddStep("qr");
+      startPolling();
     } catch (e: any) {
       toast({ title: "Erro inesperado", description: e?.message || "Tente novamente", variant: "destructive" });
     }
@@ -330,21 +363,20 @@ const Conexoes = () => {
   const startPolling = () => {
     if (pollingRef.current) clearInterval(pollingRef.current);
     pollingRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`${WEBHOOK_BASE}/api/instance/status/${form.instanceName}?t=${Date.now()}`);
-        if (res.ok || res.status === 304) {
-          const data = await res.json();
-          const state = data?.instance?.state || data?.state;
-          if (state === "open") {
-            setConnected(true);
-            if (pollingRef.current) clearInterval(pollingRef.current);
-            if (data?.number && createdId) {
-              await supabase.from("instancias").update({ telefone_conectado: data.number }).eq("id", createdId);
-              await refreshInstancias();
-            }
-          }
+      const res = await callEvolution({
+        action: "status",
+        instanceName: form.instanceName,
+        evolutionUrl: form.evolutionUrl,
+        evolutionApiKey: form.evolutionApiKey,
+      });
+      if (res.ok && res.state === "open") {
+        setConnected(true);
+        if (pollingRef.current) clearInterval(pollingRef.current);
+        if (res.number && createdId) {
+          await supabase.from("instancias").update({ telefone_conectado: res.number }).eq("id", createdId);
+          await refreshInstancias();
         }
-      } catch {}
+      }
     }, 5000);
   };
 
@@ -359,7 +391,7 @@ const Conexoes = () => {
     if (pollingRef.current) clearInterval(pollingRef.current);
   };
 
-  const shareLink = `${WEBHOOK_BASE}/connect/${form.instanceName}`;
+  const shareLink = `${window.location.origin}/conexoes?instance=${form.instanceName}`;
 
   return (
     <Layout>
