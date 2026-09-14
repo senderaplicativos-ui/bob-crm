@@ -113,6 +113,27 @@ const Conversations = () => {
 
   useEffect(() => { fetchData(); }, [selected, period, customStart, customEnd]);
 
+  // Auto-atualiza a lista a cada 15s enquanto a tela está aberta, para que as
+  // conversas novas (que chegam pelo webhook) apareçam sem precisar clicar em
+  // Atualizar nem dar F5. Busca em silêncio (sem mostrar "Carregando...").
+  useEffect(() => {
+    if (!selected) return;
+    const interval = setInterval(() => {
+      const { start, end } = getDateRange(period, customStart, customEnd);
+      let query = supabase
+        .from("conversas")
+        .select("*")
+        .eq("instancia_id", selected.id)
+        .order("atualizado_em", { ascending: false });
+      if (start) query = query.gte("atualizado_em", start.toISOString());
+      if (end) query = query.lte("atualizado_em", end.toISOString());
+      query.then(({ data, error }) => {
+        if (!error && data) setConversas(data as Conversa[]);
+      });
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [selected, period, customStart, customEnd]);
+
   const isGroup = (c: Conversa) => {
     if (c.is_grupo) return true;
     const digits = c.telefone.replace(/\D/g, "");
@@ -211,7 +232,7 @@ const Conversations = () => {
           <h1 className="text-2xl font-bold text-foreground">Conversas</h1>
           <p className="text-sm text-muted-foreground">{filtered.length} conversas encontradas</p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => { setPeriod("hoje"); setCustomStart(undefined); setCustomEnd(undefined); }} disabled={loading}>
+        <Button variant="outline" size="sm" onClick={() => { fetchData(); }} disabled={loading}>
           <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Atualizar
         </Button>
       </div>
