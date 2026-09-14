@@ -149,9 +149,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       conversa_id: conversaId,
       instancia_id: instanciaId,
       telefone: msg.telefone,
+      // a tela de detalhe lê 'mensagem'; mantemos 'texto' por compatibilidade
+      mensagem: msg.texto,
       texto: msg.texto,
       tipo: msg.tipo,
-      direcao: msg.fromMe ? 'enviada' : 'recebida',
+      // a tela de detalhe alinha à direita quando direcao === 'saida'
+      direcao: msg.fromMe ? 'saida' : 'entrada',
       message_id: msg.messageId,
       criado_em: msg.timestamp,
     });
