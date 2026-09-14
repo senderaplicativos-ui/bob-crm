@@ -45,6 +45,64 @@ function extractQr(data: any): string | null {
   );
 }
 
+// Monta a URL pública do webhook do bob-crm. Prioriza a env WEBHOOK_URL;
+// senão, deriva do host da própria requisição (funciona em qualquer deploy).
+function resolveWebhookUrl(req: VercelRequest): string | null {
+  const fromEnv = process.env.WEBHOOK_URL;
+  if (fromEnv) return stripSlash(fromEnv);
+  const host = req.headers.host;
+  if (!host) return null;
+  const proto =
+    (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0] ||
+    "https";
+  return `${proto}://${host}/api/webhook-evolution`;
+}
+
+// Configura o webhook da instância na Evolution para receber MESSAGES_UPSERT.
+// É best-effort: se falhar, não derruba o create/connect — só devolve o erro
+// junto na resposta para diagnóstico. Assim o usuário nunca precisa configurar
+// o webhook manualmente a cada nova instância.
+async function configureWebhook(
+  base: string,
+  headers: Record<string, string>,
+  instanceName: string,
+  webhookUrl: string,
+): Promise<{ ok: boolean; status?: number; error?: string; raw?: any }> {
+  try {
+    const resp = await fetch(`${base}/webhook/set/${encodeURIComponent(instanceName)}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        webhook: {
+          enabled: true,
+          url: webhookUrl,
+          webhookByEvents: false,
+          webhookBase64: false,
+          events: ["MESSAGES_UPSERT"],
+        },
+      }),
+    });
+    const text = await resp.text();
+    let raw: any = null;
+    try {
+      raw = text ? JSON.parse(text) : null;
+    } catch {
+      raw = { raw: text };
+    }
+    if (!resp.ok) {
+      return {
+        ok: false,
+        status: resp.status,
+        error: raw?.response?.message ?? raw?.message ?? `EVO respondeu ${resp.status}`,
+        raw,
+      };
+    }
+    return { ok: true, status: resp.status, raw };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Falha ao configurar o webhook" };
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (applyCors(req, res)) return;
 
@@ -171,7 +229,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       data?.number ??
       null;
 
-    res.status(200).json({ ok: true, state, qrcode, number, raw: data });
+    // Em create/connect, garante que o webhook do bob-crm esteja configurado
+    // para receber MESSAGES_UPSERT. Assim o usuário nunca precisa configurar
+    // manualmente a cada nova instância. É best-effort: não derruba a resposta.
+    let webhook: Awaited<ReturnType<typeof configureWebhook>> | undefined;
+    if (action === "create" || action === "connect") {
+      const webhookUrl = resolveWebhookUrl(req);
+      if (webhookUrl) {
+        webhook = await configureWebhook(base, headers, instanceName, webhookUrl);
+      } else {
+        webhook = { ok: false, error: "Não foi possível resolver a URL do webhook" };
+      }
+    }
+
+    res.status(200).json({ ok: true, state, qrcode, number, webhook, raw: data });
   } catch (err: any) {
     res.status(502).json({
       error: { message: err?.message || "Falha ao contatar a Evolution API" },
