@@ -90,10 +90,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const db = await getDb();
 
-    // resolve a instância pelo nome (se veio)
+    // resolve a instância pelo nome da Evolution (se veio).
+    // O nome que a Evolution envia fica no campo evolution_instance_name;
+    // caímos para 'nome' apenas como reserva.
     let instanciaId: string | null = null;
     if (instanceName) {
-      const inst = await db.collection('instancias').findOne({ nome: instanceName });
+      const inst = await db.collection('instancias').findOne({
+        $or: [
+          { evolution_instance_name: instanceName },
+          { nome: instanceName },
+        ],
+      });
       instanciaId = inst?.id ?? null;
     }
 
@@ -107,6 +114,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       {
         $set: {
           telefone: msg.telefone,
+          // a tela de Conversas lê 'nome'; mantemos 'nome_contato' por compatibilidade
+          nome: msg.nome,
           nome_contato: msg.nome,
           instancia_id: instanciaId,
           ultima_mensagem: msg.texto,
@@ -115,6 +124,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
         $setOnInsert: {
           id: convId,
+          // a tela de Conversas lê 'status'; mantemos 'estagio' por compatibilidade
+          status: 'NOVO',
           estagio: 'NOVO',
           criado_em: nowIso(),
         },
