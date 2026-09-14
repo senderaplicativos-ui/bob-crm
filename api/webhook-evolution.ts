@@ -109,27 +109,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (instanciaId) convQuery.instancia_id = instanciaId;
 
     const convId = randomUUID();
+
+    // O nome da conversa deve ser SEMPRE o do contato (remetente que faz contato),
+    // nunca o da instância. Em mensagens de saída (fromMe = true) o pushName é o
+    // nome da própria conta conectada, então não podemos usá-lo para renomear a
+    // conversa — senão o nome do contato é sobrescrito pelo nome da instância.
+    const setFields: Record<string, unknown> = {
+      telefone: msg.telefone,
+      instancia_id: instanciaId,
+      ultima_mensagem: msg.texto,
+      ultima_mensagem_em: msg.timestamp,
+      atualizado_em: nowIso(),
+    };
+    if (!msg.fromMe && msg.nome) {
+      // só atualiza o nome quando a mensagem é de ENTRADA (o contato)
+      // a tela de Conversas lê 'nome'; mantemos 'nome_contato' por compatibilidade
+      setFields.nome = msg.nome;
+      setFields.nome_contato = msg.nome;
+    }
+
+    const setOnInsert: Record<string, unknown> = {
+      id: convId,
+      // a tela de Conversas lê 'status'; mantemos 'estagio' por compatibilidade
+      status: 'NOVO',
+      estagio: 'NOVO',
+      criado_em: nowIso(),
+    };
+    // Se a conversa nascer de uma mensagem de saída, ainda não temos o nome do
+    // contato — deixamos null (a tela cai para o telefone) em vez de gravar o
+    // nome da instância.
+    if (msg.fromMe || !msg.nome) {
+      setOnInsert.nome = null;
+      setOnInsert.nome_contato = null;
+    }
+
     await db.collection('conversas').updateOne(
       convQuery,
-      {
-        $set: {
-          telefone: msg.telefone,
-          // a tela de Conversas lê 'nome'; mantemos 'nome_contato' por compatibilidade
-          nome: msg.nome,
-          nome_contato: msg.nome,
-          instancia_id: instanciaId,
-          ultima_mensagem: msg.texto,
-          ultima_mensagem_em: msg.timestamp,
-          atualizado_em: nowIso(),
-        },
-        $setOnInsert: {
-          id: convId,
-          // a tela de Conversas lê 'status'; mantemos 'estagio' por compatibilidade
-          status: 'NOVO',
-          estagio: 'NOVO',
-          criado_em: nowIso(),
-        },
-      },
+      { $set: setFields, $setOnInsert: setOnInsert },
       { upsert: true },
     );
 

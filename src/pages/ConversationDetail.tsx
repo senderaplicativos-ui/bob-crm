@@ -296,7 +296,13 @@ const ConversationDetail = () => {
               const matches = msg.mensagem ? findRuleMatches(msg.mensagem, regras) : [];
               return (
                 <div key={msg.id} className={cn("flex flex-col", isSaida ? "items-end" : "items-start")}>
-                  <span className="mb-0.5 text-[10px] text-muted-foreground">{isSaida ? (selected?.nome || "Você") : (conversa.nome || "Lead")}</span>
+                  {/* Saída = a conta conectada na instância; entrada = o contato.
+                      Sem nome do contato, cai para o telefone dele (nunca o da instância). */}
+                  <span className="mb-0.5 text-[10px] text-muted-foreground">
+                    {isSaida
+                      ? (selected?.telefone_conectado ? formatPhone(selected.telefone_conectado) : (selected?.nome || "Você"))
+                      : (conversa.nome || formatPhone(conversa.telefone))}
+                  </span>
                   <div
                     className={cn(
                       "max-w-[75%] rounded-2xl px-4 py-2.5 text-sm",

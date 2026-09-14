@@ -7,7 +7,15 @@
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
 const API_TOKEN = (import.meta.env.VITE_API_TOKEN as string | undefined) || "";
 
-export type EvoAction = "create" | "connect" | "status" | "delete" | "logout" | "restart";
+export type EvoAction =
+  | "create"
+  | "connect"
+  | "status"
+  | "delete"
+  | "logout"
+  | "restart"
+  // traz os dados da instância na EVO, inclusive o número conectado (ownerJid)
+  | "fetchInstance";
 
 export interface EvoParams {
   action: EvoAction;

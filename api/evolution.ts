@@ -7,7 +7,7 @@
 //
 // POST /api/evolution
 // body: {
-//   action: "create" | "connect" | "status" | "delete" | "logout" | "restart",
+//   action: "create" | "connect" | "status" | "delete" | "logout" | "restart" | "fetchInstance",
 //   evolutionUrl: string,        // ex: https://chatevo.atende.app.br
 //   evolutionApiKey: string,     // apikey da EVO
 //   instanceName: string,
@@ -17,7 +17,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { checkAuth, applyCors } from "./_lib/auth";
 
-type Action = "create" | "connect" | "status" | "delete" | "logout" | "restart";
+type Action =
+  | "create"
+  | "connect"
+  | "status"
+  | "delete"
+  | "logout"
+  | "restart"
+  | "fetchInstance";
 
 interface EvoBody {
   action?: Action;
@@ -43,6 +50,34 @@ function extractQr(data: any): string | null {
     data?.code ??
     null
   );
+}
+
+// Extrai o número do WhatsApp conectado. A EVO varia bastante conforme a
+// versão e o endpoint: ownerJid ("5571...@s.whatsapp.net"), owner, number, e
+// o fetchInstances devolve um array (às vezes com a instância dentro de
+// .instance). Retorna só os dígitos, sem o sufixo do JID.
+function extractNumber(data: any): string | null {
+  const candidates: any[] = [];
+  const push = (obj: any) => {
+    if (!obj || typeof obj !== "object") return;
+    candidates.push(obj.ownerJid, obj.owner, obj.number, obj.wuid);
+  };
+
+  push(data);
+  push(data?.instance);
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      push(item);
+      push(item?.instance);
+    }
+  }
+
+  for (const raw of candidates) {
+    if (typeof raw !== "string" || !raw) continue;
+    const digits = raw.replace(/@.*$/, "").replace(/\D/g, "");
+    if (digits) return digits;
+  }
+  return null;
 }
 
 // Monta a URL pública do webhook do bob-crm. Prioriza a env WEBHOOK_URL;
@@ -169,6 +204,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
         break;
       }
+      case "fetchInstance": {
+        // Traz os dados completos da instância, incluindo o número do WhatsApp
+        // conectado (ownerJid). O connectionState só devolve o state.
+        evoRes = await fetch(
+          `${base}/instance/fetchInstances?instanceName=${encodeURIComponent(instanceName)}`,
+          { method: "GET", headers }
+        );
+        break;
+      }
       case "delete": {
         evoRes = await fetch(`${base}/instance/delete/${encodeURIComponent(instanceName)}`, {
           method: "DELETE",
@@ -220,14 +264,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
+    // O fetchInstances devolve um array (ou { instance: {...} }); as demais
+    // ações devolvem um objeto direto. Achata para um objeto só.
+    const inst = Array.isArray(data)
+      ? (data[0]?.instance ?? data[0] ?? null)
+      : (data?.instance ?? data ?? null);
+
     // Normaliza os campos mais usados pelo front.
-    const state = data?.instance?.state ?? data?.state ?? null;
+    const state = inst?.state ?? inst?.connectionStatus ?? data?.state ?? null;
     const qrcode = extractQr(data);
-    const number =
-      data?.instance?.owner ??
-      data?.instance?.number ??
-      data?.number ??
-      null;
+    const number = extractNumber(data);
 
     // Em create/connect, garante que o webhook do bob-crm esteja configurado
     // para receber MESSAGES_UPSERT. Assim o usuário nunca precisa configurar

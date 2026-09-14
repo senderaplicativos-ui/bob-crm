@@ -65,6 +65,8 @@ const Conexoes = () => {
   const checkStatuses = async () => {
     setChecking(true);
     const results: Record<string, boolean> = {};
+    let algumNumeroGravado = false;
+
     await Promise.all(
       ativas.map(async (inst) => {
         if (!inst.evolution_instance_name || !inst.evolution_url || !inst.evolution_api_key) {
@@ -77,11 +79,33 @@ const Conexoes = () => {
           evolutionUrl: inst.evolution_url,
           evolutionApiKey: inst.evolution_api_key,
         });
-        results[inst.id] = r.ok && r.state === "open";
+        const online = r.ok && r.state === "open";
+        results[inst.id] = online;
+
+        // Se está conectada mas não temos o telefone salvo, busca na EVO.
+        // O connectionState só devolve o state; o número vem do fetchInstances
+        // (ownerJid). Sem isso a lista mostra "Sem número" para sempre.
+        if (online && !inst.telefone_conectado) {
+          const info = await callEvolution({
+            action: "fetchInstance",
+            instanceName: inst.evolution_instance_name,
+            evolutionUrl: inst.evolution_url,
+            evolutionApiKey: inst.evolution_api_key,
+          });
+          if (info.ok && info.number) {
+            await supabase
+              .from("instancias")
+              .update({ telefone_conectado: info.number })
+              .eq("id", inst.id);
+            algumNumeroGravado = true;
+          }
+        }
       })
     );
+
     setStatuses(results);
     setChecking(false);
+    if (algumNumeroGravado) await refreshInstancias();
   };
 
   useEffect(() => { if (ativas.length > 0) checkStatuses(); }, [instancias]);
