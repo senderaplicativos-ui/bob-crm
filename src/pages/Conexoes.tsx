@@ -143,6 +143,9 @@ const Conexoes = () => {
       }
       // Limpa os estágios de funil órfãos dessa instância.
       await supabase.from("estagios_funil").delete().eq("instancia_id", inst.id);
+      // Limpa conversas e mensagens dessa instância para não acumular lixo no banco.
+      await supabase.from("mensagens").delete().eq("instancia_id", inst.id);
+      await supabase.from("conversas").delete().eq("instancia_id", inst.id);
       toast({ title: "Instância removida" });
       setRemoveTarget(null);
       await refreshInstancias();
