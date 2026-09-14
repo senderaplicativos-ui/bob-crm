@@ -104,7 +104,9 @@ const Conexoes = () => {
   };
 
   const copyLink = (name: string) => {
-    navigator.clipboard.writeText(`${window.location.origin}/conexoes?instance=${name}`);
+    // Link público de conexão: abre a página /conectar/:name (fora do login),
+    // que mostra só o QR. O /conexoes é interno e exige autenticação.
+    navigator.clipboard.writeText(`${window.location.origin}/conectar/${encodeURIComponent(name)}`);
     toast({ title: "Link copiado!" });
   };
 
@@ -394,7 +396,7 @@ const Conexoes = () => {
     if (pollingRef.current) clearInterval(pollingRef.current);
   };
 
-  const shareLink = `${window.location.origin}/conexoes?instance=${form.instanceName}`;
+  const shareLink = `${window.location.origin}/conectar/${encodeURIComponent(form.instanceName)}`;
 
   return (
     <Layout>

@@ -15,6 +15,7 @@ import ConversationDetail from "./pages/ConversationDetail";
 import Funil from "./pages/Funil";
 import Regras from "./pages/Regras";
 import Conexoes from "./pages/Conexoes";
+import Conectar from "./pages/Conectar";
 import Links from "./pages/Links";
 import MetaPixel from "./pages/MetaPixel";
 import NotFound from "./pages/NotFound";
@@ -34,6 +35,9 @@ const App = () => (
           <BrowserRouter>
             <Routes>
               <Route path="/login" element={<Login />} />
+              {/* Rota PÚBLICA: o cliente final abre este link só para escanear o
+                  QR. Fica fora do ProtectedRoute de propósito. */}
+              <Route path="/conectar/:name" element={<Conectar />} />
               <Route path="/" element={protect(<InstanceSelect />)} />
               <Route path="/adicionar-cliente" element={protect(<Conexoes />)} />
               <Route path="/dashboard" element={protect(<Dashboard />)} />
