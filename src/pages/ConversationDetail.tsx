@@ -30,6 +30,19 @@ interface Mensagem {
   mensagem: string | null;
   direcao: string | null;
   criado_em: string | null;
+  tipo: string | null;
+}
+
+// Rótulo amigável para mensagens sem texto (mídias que o webhook grava sem
+// conteúdo textual). Assim quem usa sabe que chegou algo, mesmo sem preview.
+function placeholderMidia(tipo: string | null): string {
+  switch (tipo) {
+    case "imagem": return "🖼️ Imagem (não exibida aqui)";
+    case "audio": return "🎧 Áudio (não exibido aqui)";
+    case "video": return "🎬 Vídeo (não exibido aqui)";
+    case "documento": return "📎 Documento (não exibido aqui)";
+    default: return "📩 Mensagem sem texto (mídia não exibida aqui)";
+  }
 }
 
 interface Regra {
@@ -311,7 +324,13 @@ const ConversationDetail = () => {
                         : "bg-[#F3F4F6] text-gray-900 rounded-bl-md dark:bg-secondary dark:text-secondary-foreground"
                     )}
                   >
-                    {msg.mensagem ? <HighlightedMessage text={msg.mensagem} matches={matches} /> : <p />}
+                    {msg.mensagem ? (
+                      <HighlightedMessage text={msg.mensagem} matches={matches} />
+                    ) : (
+                      <p className="flex items-center gap-1.5 italic text-muted-foreground">
+                        {placeholderMidia(msg.tipo)}
+                      </p>
+                    )}
                     {matches.length > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {[...new Set(matches.map((m) => m.resultado))].map((r) => {

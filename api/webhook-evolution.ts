@@ -25,14 +25,52 @@ function authorized(req: VercelRequest): boolean {
   return apikey === expected || xToken === expected || bearer === expected;
 }
 
+// Só dígitos de um JID/telefone (remove o sufixo @... e qualquer não-dígito).
+function soDigitos(jid: unknown): string {
+  return String(jid ?? '').replace(/@.*$/, '').replace(/\D/g, '');
+}
+
+// Um telefone "de verdade" do WhatsApp tem o formato país+DDD+número.
+// O identificador @lid traz um código interno (não começa com 55 e costuma
+// ter 14-15+ dígitos), então serve só como último recurso.
+function pareceTelefoneReal(num: string): boolean {
+  return num.length >= 10 && num.length <= 13;
+}
+
 // Extrai os campos que interessam de um payload da Evolution (formato messages.upsert).
 function parseMessage(body: Record<string, unknown>) {
   const data = (body.data ?? body) as Record<string, any>;
   const key = (data.key ?? {}) as Record<string, any>;
   const message = (data.message ?? {}) as Record<string, any>;
 
-  const remoteJid: string = key.remoteJid ?? '';
-  const telefone = remoteJid.replace(/@.*$/, '');
+  // O WhatsApp às vezes manda o remetente como @lid (um ID interno) em vez do
+  // telefone real (@s.whatsapp.net). Nesses casos a Evolution/Baileys envia o
+  // número verdadeiro em um campo alternativo. Coletamos todos os candidatos e
+  // preferimos o que parece um telefone de verdade; o @lid fica como reserva.
+  const rawRemoteJid: string = key.remoteJid ?? '';
+  const candidatos = [
+    key.senderPn,          // número real do remetente (formato novo)
+    key.remoteJidAlt,      // JID alternativo (quando remoteJid é @lid)
+    key.participantPn,     // idem para grupos
+    data.senderPn,
+    rawRemoteJid.includes('@lid') ? '' : rawRemoteJid, // remoteJid só se não for @lid
+    rawRemoteJid,          // último recurso: mesmo que seja @lid
+  ];
+
+  let telefone = '';
+  for (const c of candidatos) {
+    const num = soDigitos(c);
+    if (num && pareceTelefoneReal(num)) { telefone = num; break; }
+  }
+  // se nenhum candidato pareceu telefone real, usa o primeiro não-vazio (o @lid)
+  if (!telefone) {
+    for (const c of candidatos) {
+      const num = soDigitos(c);
+      if (num) { telefone = num; break; }
+    }
+  }
+
+  const remoteJid = rawRemoteJid;
   const fromMe: boolean = key.fromMe ?? false;
 
   // texto pode vir em vários formatos
@@ -89,6 +127,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const db = await getDb();
+
+    // LOG TEMPORÁRIO: quando o remetente vem como @lid, gravamos o payload bruto
+    // para descobrir em qual campo a Evolution manda o telefone real.
+    // Remover depois de confirmar o campo certo.
+    try {
+      const rawJid = String((((body.data ?? body) as any)?.key?.remoteJid) ?? '');
+      if (rawJid.includes('@lid')) {
+        await db.collection('log_webhook').insertOne({
+          id: randomUUID(),
+          motivo: 'remoteJid @lid',
+          telefone_resolvido: msg.telefone,
+          body,
+          criado_em: nowIso(),
+        });
+      }
+    } catch { /* ignora erro de log */ }
 
     // resolve a instância pelo nome da Evolution (se veio).
     // O nome que a Evolution envia fica no campo evolution_instance_name;
