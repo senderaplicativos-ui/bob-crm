@@ -126,6 +126,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ ok: true, ignored: 'sem remoteJid' });
     }
 
+    // Grupo (@g.us), newsletter/canal (@newsletter) e status (status@broadcast)
+    // não são leads — são ruído no CRM. Só tratamos conversa individual.
+    if (/@(g\.us|newsletter|broadcast)$/i.test(msg.remoteJid)) {
+      return res.status(200).json({ ok: true, ignored: 'não é conversa individual' });
+    }
+
     const db = await getDb();
 
     // LOG TEMPORÁRIO: quando o remetente vem como @lid, gravamos o payload bruto
