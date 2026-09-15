@@ -37,6 +37,38 @@ function pareceTelefoneReal(num: string): boolean {
   return num.length >= 10 && num.length <= 13;
 }
 
+// Grava o telefone conectado da instância quando ele ainda não está no Mongo.
+// A tela mostra "Sem número" enquanto esse campo estiver vazio, e o
+// checkStatuses do painel só consegue preencher se a instância estiver online
+// no exato momento em que alguém abre a página. Aqui aproveitamos qualquer
+// evento da Evolution (que só chega quando a instância está de fato conectada)
+// para resolver isso sozinho. Best-effort: falhar aqui não afeta o webhook.
+async function backfillTelefoneInstancia(db: any, inst: any): Promise<void> {
+  if (!inst || inst.telefone_conectado) return;
+  const base = String(inst.evolution_url ?? '').replace(/\/$/, '');
+  const apikey = String(inst.evolution_api_key ?? '');
+  const name = String(inst.evolution_instance_name ?? '');
+  if (!base || !apikey || !name) return;
+  try {
+    const r = await fetch(
+      `${base}/instance/fetchInstances?instanceName=${encodeURIComponent(name)}`,
+      { method: 'GET', headers: { 'Content-Type': 'application/json', apikey } },
+    );
+    if (!r.ok) return;
+    const data: any = await r.json();
+    const item = Array.isArray(data)
+      ? (data[0]?.instance ?? data[0])
+      : (data?.instance ?? data);
+    const numero = soDigitos(item?.ownerJid ?? item?.owner ?? item?.number ?? item?.wuid);
+    if (numero && pareceTelefoneReal(numero)) {
+      await db.collection('instancias').updateOne(
+        { id: inst.id },
+        { $set: { telefone_conectado: numero, atualizado_em: nowIso() } },
+      );
+    }
+  } catch { /* ignora: é melhor perder o número do que perder a mensagem */ }
+}
+
 // Extrai os campos que interessam de um payload da Evolution (formato messages.upsert).
 function parseMessage(body: Record<string, unknown>) {
   const data = (body.data ?? body) as Record<string, any>;
@@ -134,22 +166,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const db = await getDb();
 
-    // LOG TEMPORÁRIO: quando o remetente vem como @lid, gravamos o payload bruto
-    // para descobrir em qual campo a Evolution manda o telefone real.
-    // Remover depois de confirmar o campo certo.
-    try {
-      const rawJid = String((((body.data ?? body) as any)?.key?.remoteJid) ?? '');
-      if (rawJid.includes('@lid')) {
-        await db.collection('log_webhook').insertOne({
-          id: randomUUID(),
-          motivo: 'remoteJid @lid',
-          telefone_resolvido: msg.telefone,
-          body,
-          criado_em: nowIso(),
-        });
-      }
-    } catch { /* ignora erro de log */ }
-
     // resolve a instância pelo nome da Evolution (se veio).
     // O nome que a Evolution envia fica no campo evolution_instance_name;
     // caímos para 'nome' apenas como reserva.
@@ -162,6 +178,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ],
       });
       instanciaId = inst?.id ?? null;
+      // Se chegou evento é porque a instância está conectada: aproveita para
+      // gravar o telefone dela caso ainda esteja faltando.
+      await backfillTelefoneInstancia(db, inst);
     }
 
     // upsert da conversa (uma por telefone+instância)

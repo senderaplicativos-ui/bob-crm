@@ -20,7 +20,9 @@ const Conexoes = () => {
   const { instancias, refreshInstancias, selected, setSelected } = useInstance();
   const ativas = instancias.filter((i) => i.ativo !== false);
   const { toast } = useToast();
-  const [statuses, setStatuses] = useState<Record<string, boolean>>({});
+  // undefined = ainda não sabemos (verificando). Não é a mesma coisa que offline:
+  // mostrar "Desconectado" antes da resposta da EVO chegar é informação errada.
+  const [statuses, setStatuses] = useState<Record<string, boolean | undefined>>({});
   const [checking, setChecking] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<Instancia | null>(null);
   const [logoutTarget, setLogoutTarget] = useState<Instancia | null>(null);
@@ -109,6 +111,22 @@ const Conexoes = () => {
   };
 
   useEffect(() => { if (ativas.length > 0) checkStatuses(); }, [instancias]);
+
+  // Revalidação automática. O state da EVO leva alguns segundos para virar
+  // "open" depois que o cliente escaneia o QR, então a primeira consulta pode
+  // pegar a instância ainda conectando. Sem isso o painel fica mostrando
+  // "Desconectado" até alguém apertar F5.
+  useEffect(() => {
+    if (ativas.length === 0) return;
+    const timer = setInterval(() => { checkStatuses(); }, 30000);
+    // e também quando a aba volta para o foco (troca de janela, celular etc.)
+    const onVisible = () => { if (document.visibilityState === "visible") checkStatuses(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [instancias]);
 
   const openQr = async (inst: Instancia) => {
     if (!inst.evolution_instance_name) return;
@@ -441,22 +459,39 @@ const Conexoes = () => {
 
       <div className="space-y-4">
         {ativas.map((inst) => {
-          const isConnected = statuses[inst.id] ?? false;
+          // três estados: undefined = ainda não sabemos (primeira consulta em
+          // andamento). Mostrar "Desconectado" nesse momento é mentira e assusta
+          // o cliente que acabou de conectar.
+          const status = statuses[inst.id];
+          const isConnected = status === true;
+          const isUnknown = status === undefined;
           const isReconnecting = reconnecting === inst.id;
           return (
             <div key={inst.id} className="flex flex-col gap-3 rounded-xl border border-border bg-card p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
-                {isConnected ? <Wifi className="h-5 w-5 text-primary" /> : <WifiOff className="h-5 w-5 text-destructive" />}
+                {isUnknown ? (
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                ) : isConnected ? (
+                  <Wifi className="h-5 w-5 text-primary" />
+                ) : (
+                  <WifiOff className="h-5 w-5 text-destructive" />
+                )}
                 <div>
                   <h3 className="font-semibold text-foreground">{inst.nome}</h3>
                   <p className="text-xs text-muted-foreground">{inst.evolution_instance_name} • {inst.telefone_conectado || "Sem número"}</p>
                 </div>
-                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${isConnected ? "bg-primary/15 text-primary" : "bg-destructive/15 text-destructive"}`}>
-                  {isConnected ? "Conectado" : "Desconectado"}
+                <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                  isUnknown
+                    ? "bg-muted text-muted-foreground"
+                    : isConnected
+                      ? "bg-primary/15 text-primary"
+                      : "bg-destructive/15 text-destructive"
+                }`}>
+                  {isUnknown ? "Verificando..." : isConnected ? "Conectado" : "Desconectado"}
                 </span>
               </div>
               <div className="flex flex-wrap gap-2">
-                {!isConnected && (
+                {!isConnected && !isUnknown && (
                   <Button
                     size="sm"
                     disabled={isReconnecting}
