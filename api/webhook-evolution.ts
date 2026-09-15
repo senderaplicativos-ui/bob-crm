@@ -69,6 +69,79 @@ async function backfillTelefoneInstancia(db: any, inst: any): Promise<void> {
   } catch { /* ignora: é melhor perder o número do que perder a mensagem */ }
 }
 
+type Regra = {
+  tipo_regra?: string;
+  modo?: string;
+  texto?: string;
+  resultado?: string;
+  ativo?: boolean | null;
+};
+
+// Escapa um texto para uso literal dentro de RegExp.
+function escapaRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Uma regra casa com a mensagem? Mesma semântica do findRuleMatches da tela de
+// detalhe (ConversationDetail.tsx): 'texto' é uma lista separada por vírgula e
+// basta UMA palavra-chave casar.
+function regraCasa(regra: Regra, texto: string): boolean {
+  const alvo = texto.toLowerCase();
+  const palavras = String(regra.texto ?? '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean);
+
+  for (const palavra of palavras) {
+    const chave = palavra.toLowerCase();
+    if (regra.modo === 'exact') {
+      if (alvo === chave) return true;
+    } else if (regra.modo === 'word') {
+      if (new RegExp(`\\b${escapaRegex(chave)}\\b`, 'i').test(texto)) return true;
+    } else {
+      // 'contains' é o padrão
+      if (alvo.includes(chave)) return true;
+    }
+  }
+  return false;
+}
+
+// Aplica as regras cadastradas ao texto da mensagem e devolve o que deve ser
+// gravado na conversa. Até agora as regras só pintavam a mensagem na tela de
+// detalhe — nada era persistido, então Origem/Status nunca mudavam na lista.
+// As regras valem para mensagem de entrada E de saída: a resposta automática da
+// instância ("Oi! Anderson por aqui!") é justamente o que identifica um lead
+// vindo de anúncio.
+async function aplicarRegras(
+  db: any,
+  instanciaId: string | null,
+  texto: string,
+): Promise<{ origem?: string; status?: string }> {
+  if (!texto) return {};
+  try {
+    // regras da instância + regras globais (instancia_id null)
+    const filtro: Record<string, unknown> = {
+      ativo: { $ne: false },
+      $or: [{ instancia_id: instanciaId }, { instancia_id: null }],
+    };
+    const regras = (await db.collection('regras').find(filtro).toArray()) as Regra[];
+
+    const out: { origem?: string; status?: string } = {};
+    for (const regra of regras) {
+      if (!regraCasa(regra, texto)) continue;
+      const resultado = String(regra.resultado ?? '').trim();
+      if (!resultado) continue;
+      // a primeira regra que casar ganha (as demais do mesmo tipo são ignoradas)
+      if (regra.tipo_regra === 'ORIGEM' && !out.origem) out.origem = resultado;
+      if (regra.tipo_regra === 'STATUS' && !out.status) out.status = resultado;
+    }
+    return out;
+  } catch {
+    // regra é enfeite: se falhar, a mensagem ainda tem que ser gravada
+    return {};
+  }
+}
+
 // Extrai os campos que interessam de um payload da Evolution (formato messages.upsert).
 function parseMessage(body: Record<string, unknown>) {
   const data = (body.data ?? body) as Record<string, any>;
@@ -189,6 +262,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const convId = randomUUID();
 
+    // Estado atual da conversa (se já existe): precisamos saber antes do upsert
+    // para não sobrescrever Origem/Status que alguém ajustou à mão no painel.
+    const convAtual = await db.collection('conversas').findOne(convQuery);
+
+    // Regras casadas com o texto desta mensagem.
+    const regra = await aplicarRegras(db, instanciaId, msg.texto);
+
     // O nome da conversa deve ser SEMPRE o do contato (remetente que faz contato),
     // nunca o da instância. Em mensagens de saída (fromMe = true) o pushName é o
     // nome da própria conta conectada, então não podemos usá-lo para renomear a
@@ -214,6 +294,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       estagio: 'NOVO',
       criado_em: nowIso(),
     };
+
+    // Grava o resultado das regras, sem atropelar ajuste manual:
+    // - Origem: só preenche se ainda estiver vazia.
+    // - Status: só mexe enquanto a conversa estiver em 'NOVO' (intocada). Se
+    //   alguém já moveu o lead no funil, a regra não puxa de volta.
+    // Atenção: o mesmo campo não pode estar em $set e $setOnInsert (o Mongo
+    // recusa com conflito), então removemos do $setOnInsert quando entra no $set.
+    if (regra.origem && !convAtual?.origem) {
+      setFields.origem = regra.origem;
+    }
+    const statusAtual = String(convAtual?.status ?? '').trim();
+    const statusIntocado = !convAtual || statusAtual === '' || statusAtual === 'NOVO';
+    if (regra.status && statusIntocado) {
+      setFields.status = regra.status;
+      setFields.estagio = regra.status;
+      delete setOnInsert.status;
+      delete setOnInsert.estagio;
+    }
     // Se a conversa nascer de uma mensagem de saída, ainda não temos o nome do
     // contato — deixamos null (a tela cai para o telefone) em vez de gravar o
     // nome da instância.
