@@ -142,6 +142,69 @@ async function aplicarRegras(
   }
 }
 
+// Mescla a conversa "órfã" (a que ficou gravada com o LID no campo telefone) na
+// conversa do telefone real. Acontece quando o lead chega de anúncio: a primeira
+// mensagem vem só com o @lid e, quando a instância responde, a Evolution passa a
+// mandar o telefone. Sem isso um único lead aparece duas vezes na lista.
+//
+// Best-effort: se falhar, a mensagem ainda tem que ser gravada.
+async function mesclarConversaLid(
+  db: any,
+  instanciaId: string,
+  lid: string,
+  telefoneReal: string,
+): Promise<void> {
+  if (!lid || !telefoneReal || lid === telefoneReal) return;
+  try {
+    const orfa = await db.collection('conversas').findOne({
+      instancia_id: instanciaId,
+      telefone: lid,
+    });
+    if (!orfa) return;
+
+    // A conversa destino pode ainda não existir (a resposta da instância pode ser
+    // o primeiro evento com o telefone real). Nesse caso basta renomear a órfã:
+    // preserva id, mensagens, origem, status e o histórico já gravado.
+    const destino = await db.collection('conversas').findOne({
+      instancia_id: instanciaId,
+      telefone: telefoneReal,
+    });
+
+    if (!destino) {
+      await db.collection('conversas').updateOne(
+        { id: orfa.id },
+        { $set: { telefone: telefoneReal, lid, atualizado_em: nowIso() } },
+      );
+      await db.collection('mensagens').updateMany(
+        { conversa_id: orfa.id },
+        { $set: { telefone: telefoneReal } },
+      );
+      return;
+    }
+
+    // Destino já existe: move as mensagens da órfã e apaga a órfã.
+    await db.collection('mensagens').updateMany(
+      { conversa_id: orfa.id },
+      { $set: { conversa_id: destino.id, telefone: telefoneReal } },
+    );
+
+    // Aproveita o que a órfã tinha e o destino não tem (a mensagem do anúncio
+    // costuma ser a que carrega a origem, e o nome do contato pode estar só nela).
+    const herda: Record<string, unknown> = { lid, atualizado_em: nowIso() };
+    if (!destino.origem && orfa.origem) herda.origem = orfa.origem;
+    if (!destino.nome && orfa.nome) {
+      herda.nome = orfa.nome;
+      herda.nome_contato = orfa.nome_contato ?? orfa.nome;
+    }
+    // mantém a data de criação mais antiga (o lead nasceu no clique do anúncio)
+    if (orfa.criado_em && (!destino.criado_em || orfa.criado_em < destino.criado_em)) {
+      herda.criado_em = orfa.criado_em;
+    }
+    await db.collection('conversas').updateOne({ id: destino.id }, { $set: herda });
+    await db.collection('conversas').deleteOne({ id: orfa.id });
+  } catch { /* ignora: melhor um lead duplicado do que perder a mensagem */ }
+}
+
 // Extrai os campos que interessam de um payload da Evolution (formato messages.upsert).
 function parseMessage(body: Record<string, unknown>) {
   const data = (body.data ?? body) as Record<string, any>;
@@ -201,7 +264,13 @@ function parseMessage(body: Record<string, unknown>) {
     ? new Date(Number(data.messageTimestamp) * 1000).toISOString()
     : nowIso();
 
-  return { remoteJid, telefone, fromMe, texto, tipo, nome, messageId, timestamp };
+  // O LID (identificador interno de privacidade) desta conversa, quando existe.
+  // Guardamos separado porque ele é a única ponte entre a mensagem de entrada do
+  // anúncio (que chega SÓ com o @lid) e as respostas seguintes (que já trazem o
+  // telefone real em remoteJidAlt). Sem gravar o LID, os dois viram leads.
+  const lid = rawRemoteJid.includes('@lid') ? soDigitos(rawRemoteJid) : '';
+
+  return { remoteJid, telefone, lid, fromMe, texto, tipo, nome, messageId, timestamp };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -256,8 +325,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await backfillTelefoneInstancia(db, inst);
     }
 
+    // ---- Resolução do LID -------------------------------------------------
+    // Mensagem de entrada vinda de anúncio chega SÓ com o @lid: não há
+    // remoteJidAlt, então não há como saber o telefone naquele momento. Quando a
+    // instância responde, a Evolution passa a mandar remoteJidAlt com o número
+    // real. Se tratarmos os dois como conversas separadas, um lead vira dois.
+    //
+    // A ponte é o próprio LID: gravamos ele na conversa e, quando o telefone
+    // real aparece, mesclamos a conversa órfã (a que ficou com o LID no campo
+    // telefone) na conversa do telefone.
+    let telefone = msg.telefone;
+    const telefoneEhLid = !!msg.lid && telefone === msg.lid;
+
+    if (telefoneEhLid && instanciaId) {
+      // Já conhecemos esse LID de um pareamento anterior? Então usa o telefone.
+      const conhecida = await db.collection('conversas').findOne({
+        instancia_id: instanciaId,
+        lid: msg.lid,
+        telefone: { $ne: msg.lid },
+      });
+      if (conhecida?.telefone) telefone = String(conhecida.telefone);
+    }
+
+    // Caminho inverso: esta mensagem trouxe o telefone real E o LID juntos
+    // (é o que acontece quando a instância responde). Se existe uma conversa
+    // órfã gravada com o LID no lugar do telefone, ela é o mesmo contato —
+    // mescla as mensagens nela para o telefone real e apaga a órfã.
+    if (msg.lid && !telefoneEhLid && instanciaId) {
+      await mesclarConversaLid(db, instanciaId, msg.lid, telefone);
+    }
+
     // upsert da conversa (uma por telefone+instância)
-    const convQuery: Record<string, unknown> = { telefone: msg.telefone };
+    const convQuery: Record<string, unknown> = { telefone };
     if (instanciaId) convQuery.instancia_id = instanciaId;
 
     const convId = randomUUID();
@@ -274,12 +373,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // nome da própria conta conectada, então não podemos usá-lo para renomear a
     // conversa — senão o nome do contato é sobrescrito pelo nome da instância.
     const setFields: Record<string, unknown> = {
-      telefone: msg.telefone,
+      telefone,
       instancia_id: instanciaId,
       ultima_mensagem: msg.texto,
       ultima_mensagem_em: msg.timestamp,
       atualizado_em: nowIso(),
     };
+    // Guarda o LID para reconhecer o mesmo contato nos próximos eventos.
+    if (msg.lid) setFields.lid = msg.lid;
     if (!msg.fromMe && msg.nome) {
       // só atualiza o nome quando a mensagem é de ENTRADA (o contato)
       // a tela de Conversas lê 'nome'; mantemos 'nome_contato' por compatibilidade
