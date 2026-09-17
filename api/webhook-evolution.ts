@@ -69,6 +69,48 @@ async function backfillTelefoneInstancia(db: any, inst: any): Promise<void> {
   } catch { /* ignora: é melhor perder o número do que perder a mensagem */ }
 }
 
+// Busca o nome do contato na Evolution quando o payload da mensagem não trouxe.
+// Lead que chega por anúncio vem com remoteJid @lid e pushName nulo: no primeiro
+// contato o WhatsApp não entrega o nome ao negócio. O cadastro de contatos da
+// Evolution às vezes tem o nome mesmo assim, e pode passar a ter depois — por
+// isso vale consultar sempre que a conversa ainda estiver sem nome.
+// Best-effort: falhar aqui só deixa a conversa sem nome, como já estava.
+async function buscarNomeContato(
+  inst: any,
+  telefone: string,
+  lid: string,
+): Promise<string | null> {
+  const base = String(inst?.evolution_url ?? '').replace(/\/$/, '');
+  const apikey = String(inst?.evolution_api_key ?? '');
+  const name = String(inst?.evolution_instance_name ?? '');
+  if (!base || !apikey || !name) return null;
+
+  // tenta pelo telefone real e também pelo LID (o cadastro pode estar só num deles)
+  const jids = [
+    telefone ? `${telefone}@s.whatsapp.net` : '',
+    lid ? `${lid}@lid` : '',
+  ].filter(Boolean);
+
+  for (const jid of jids) {
+    try {
+      const r = await fetch(`${base}/chat/findContacts/${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey },
+        body: JSON.stringify({ where: { remoteJid: jid } }),
+      });
+      if (!r.ok) continue;
+      const data: any = await r.json();
+      const lista: any[] = Array.isArray(data) ? data : [data];
+      for (const ct of lista) {
+        const achado = String(ct?.pushName ?? ct?.name ?? '').trim();
+        // nome que é só número não é nome — é o próprio telefone/LID repetido
+        if (achado && soDigitos(achado) !== achado) return achado;
+      }
+    } catch { /* tenta o próximo JID */ }
+  }
+  return null;
+}
+
 type Regra = {
   tipo_regra?: string;
   modo?: string;
@@ -312,17 +354,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // O nome que a Evolution envia fica no campo evolution_instance_name;
     // caímos para 'nome' apenas como reserva.
     let instanciaId: string | null = null;
+    // guardado fora do if: usado depois para consultar o contato na Evolution
+    let instancia: any = null;
     if (instanceName) {
-      const inst = await db.collection('instancias').findOne({
+      instancia = await db.collection('instancias').findOne({
         $or: [
           { evolution_instance_name: instanceName },
           { nome: instanceName },
         ],
       });
-      instanciaId = inst?.id ?? null;
+      instanciaId = instancia?.id ?? null;
       // Se chegou evento é porque a instância está conectada: aproveita para
       // gravar o telefone dela caso ainda esteja faltando.
-      await backfillTelefoneInstancia(db, inst);
+      await backfillTelefoneInstancia(db, instancia);
     }
 
     // ---- Resolução do LID -------------------------------------------------
@@ -386,6 +430,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // a tela de Conversas lê 'nome'; mantemos 'nome_contato' por compatibilidade
       setFields.nome = msg.nome;
       setFields.nome_contato = msg.nome;
+    } else if (!convAtual?.nome) {
+      // Payload sem pushName e conversa ainda sem nome: tenta o cadastro de
+      // contatos da Evolution. É o caso do lead de anúncio (@lid), em que o
+      // WhatsApp não manda o nome na mensagem. Pode continuar sem nome, e aí
+      // fica como estava — na próxima mensagem tentamos de novo.
+      const nomeEvo = await buscarNomeContato(instancia, telefone, msg.lid);
+      if (nomeEvo) {
+        setFields.nome = nomeEvo;
+        setFields.nome_contato = nomeEvo;
+      }
     }
 
     const setOnInsert: Record<string, unknown> = {
