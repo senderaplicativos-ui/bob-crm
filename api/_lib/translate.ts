@@ -1,6 +1,7 @@
 // Traduz payloads no estilo PostgREST (Supabase) para operacoes MongoDB.
 import type { Db } from "mongodb";
 import { randomUUID } from "crypto";
+import { dispararEvento } from "./meta";
 
 export type FilterOp =
   | "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "is" | "not";
@@ -202,10 +203,48 @@ export async function executeQuery(
       case "update": {
         const patch = { ...(payload.values as Record<string, unknown>), atualizado_em: nowIso() };
         delete (patch as Record<string, unknown>)._id;
+
+        // Para conversas, captura o estágio anterior ANTES do update, para só
+        // disparar o evento Meta quando o estágio realmente mudou.
+        let antes: Record<string, unknown>[] = [];
+        const mexeEstagio =
+          payload.table === "conversas" &&
+          ("status" in patch || "estagio" in patch);
+        if (mexeEstagio) {
+          antes = (await col.find(filter).toArray()) as Record<string, unknown>[];
+        }
+
         await col.updateMany(filter, { $set: patch });
         const docs = (await col.find(filter).toArray()).map((d) =>
           clean(d as Record<string, unknown>)
         );
+
+        // Dispara para a Meta (best-effort, nunca quebra o update).
+        if (mexeEstagio) {
+          const novoEstagio = String(
+            (patch as Record<string, unknown>).status ??
+              (patch as Record<string, unknown>).estagio ??
+              ""
+          ).trim();
+          const anteriorPorId = new Map<string, string>();
+          for (const a of antes) {
+            const aid = String((a as Record<string, unknown>).id ?? "");
+            anteriorPorId.set(
+              aid,
+              String((a as Record<string, unknown>).status ?? (a as Record<string, unknown>).estagio ?? "").trim()
+            );
+          }
+          for (const d of docs) {
+            const did = String((d as Record<string, unknown>).id ?? "");
+            const estagioAntigo = anteriorPorId.get(did) ?? "";
+            const telefone = String((d as Record<string, unknown>).telefone ?? "").trim();
+            const instId = String((d as Record<string, unknown>).instancia_id ?? "").trim();
+            if (novoEstagio && novoEstagio !== estagioAntigo && telefone && instId) {
+              await dispararEvento(db, instId, telefone, novoEstagio);
+            }
+          }
+        }
+
         return { data: docs, error: null, count: docs.length };
       }
 

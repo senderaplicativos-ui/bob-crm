@@ -9,6 +9,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb } from './_lib/mongo';
 import { randomUUID } from 'crypto';
+import { dispararEvento } from './_lib/meta';
 
 function nowIso() {
   return new Date().toISOString();
@@ -483,6 +484,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const conversa = await db.collection('conversas').findOne(convQuery);
     const conversaId = conversa?.id ?? convId;
+
+    // Dispara evento para a Meta quando uma regra de STATUS moveu o lead de
+    // estágio. Só quando o status realmente mudou (era intocado e a regra
+    // definiu um novo). Best-effort: nunca derruba o webhook.
+    if (regra.status && statusIntocado && regra.status !== statusAtual) {
+      await dispararEvento(db, instanciaId, telefone, regra.status);
+    }
 
     // evita duplicar a mesma mensagem (idempotência por messageId)
     if (msg.messageId) {
