@@ -13,10 +13,10 @@ export interface EstagioFunil {
 }
 
 const DEFAULT_STAGES = [
-  { nome: "NOVO", ordem: 1, cor: "#6B7280" },
-  { nome: "LEAD", ordem: 2, cor: "#3B82F6" },
-  { nome: "CONTATO", ordem: 3, cor: "#F59E0B" },
-  { nome: "COMPROU", ordem: 4, cor: "#10B981" },
+  { nome: "NOVO", ordem: 1, cor: "#6B7280", ativo: true },
+  { nome: "LEAD", ordem: 2, cor: "#3B82F6", ativo: true },
+  { nome: "CONTATO", ordem: 3, cor: "#F59E0B", ativo: true },
+  { nome: "COMPROU", ordem: 4, cor: "#10B981", ativo: true },
 ];
 
 export function useFunnelStages() {
