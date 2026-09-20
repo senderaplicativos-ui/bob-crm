@@ -13,10 +13,19 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { getDb } from "./_lib/mongo";
-import { randomUUID } from "crypto";
+import { randomUUID, randomBytes } from "crypto";
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+// Código curto de rastreio (8 chars hex). Vai embutido no texto pré-preenchido
+// do wa.me e é a ponte para amarrar ESTE clique à conversa que nasce dele:
+// quando a primeira mensagem chega no webhook, o código identifica de qual
+// clique (e portanto de qual origem/campanha/anúncio) o lead veio — sem depender
+// de adivinhar por palavra-chave.
+function gerarTrackingCode(): string {
+  return randomBytes(4).toString("hex");
 }
 
 // Só dígitos: wa.me exige o número no formato internacional sem símbolos.
@@ -61,6 +70,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const telefone = onlyDigits((inst.telefone_conectado as string) || "");
 
+    // Código curto que amarra ESTE clique à conversa que nascer dele.
+    const trackingCode = gerarTrackingCode();
+
     // Registra o clique (não bloqueia o redirect se algo falhar).
     try {
       const clickId = randomUUID();
@@ -71,6 +83,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         source,
         campaign,
         ad,
+        tracking_code: trackingCode,
         telefone_destino: telefone || null,
         conversa_id: null,
         usado: false,
@@ -89,8 +102,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Ignora falha de tracking — o importante é levar o cliente ao WhatsApp.
     }
 
+    // Monta o texto pré-preenchido com um marcador de rastreio ao final.
+    // O marcador (ex.: "[#a1b2c3d4]") viaja na primeira mensagem que o cliente
+    // envia e é o que o webhook usa para casar a conversa com ESTE clique.
+    // É discreto e não atrapalha a leitura; se o cliente apagar, caímos no
+    // fallback por telefone_destino + janela de tempo no webhook.
+    const marcador = `[#${trackingCode}]`;
+    const textoComMarcador = texto ? `${texto} ${marcador}` : marcador;
+
     // Monta o destino. Sem telefone conectado, cai no wa.me genérico com o texto.
-    const encoded = texto ? `?text=${encodeURIComponent(texto)}` : "";
+    const encoded = `?text=${encodeURIComponent(textoComMarcador)}`;
     const destino = telefone
       ? `https://wa.me/${telefone}${encoded}`
       : `https://wa.me/${encoded}`;

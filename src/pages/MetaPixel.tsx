@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useInstance } from "@/contexts/InstanceContext";
@@ -14,8 +14,18 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useToast } from "@/hooks/use-toast";
 import { useFunnelStages } from "@/hooks/useFunnelStages";
 import { formatDateBR, formatPhone } from "@/lib/formatters";
-import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff } from "lucide-react";
+import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff, Send, CheckCircle2, XCircle, Percent } from "lucide-react";
 import { PeriodFilter, PeriodKey, getDateRange } from "@/components/dashboard/PeriodFilter";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Legend,
+  Tooltip as RechartsTooltip,
+} from "recharts";
 
 // Esta integração envia action_source=system_generated: o evento é gerado pelo
 // CRM quando o lead avança de estágio no funil. Nesse modo a Meta aceita os
@@ -369,6 +379,148 @@ const StatusResponseBadge = ({ status }: { status: number | null }) => {
   return <span className="inline-flex items-center rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-muted-foreground">{status ?? "—"}</span>;
 };
 
+/* ======== Section 3a: Resumo dos disparos ======== */
+
+const StatCard = ({
+  icon,
+  label,
+  value,
+  hint,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string | number;
+  hint?: string;
+  tone?: "sucesso" | "erro";
+}) => (
+  <div className="rounded-lg border border-border bg-card p-4">
+    <div className="flex items-center gap-2 text-muted-foreground">
+      {icon}
+      <span className="text-xs font-medium">{label}</span>
+    </div>
+    <p
+      className={`mt-2 text-2xl font-bold ${
+        tone === "sucesso" ? "text-primary" : tone === "erro" ? "text-destructive" : "text-foreground"
+      }`}
+    >
+      {value}
+    </p>
+    {hint ? <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p> : null}
+  </div>
+);
+
+// Agrega os disparos já carregados (respeita os mesmos filtros da tabela).
+const ResumoDisparos = ({ logs }: { logs: LogEvento[] }) => {
+  const { total, sucesso, erro, taxa, porEvento, errosPorTipo } = useMemo(() => {
+    const total = logs.length;
+    const sucesso = logs.filter((l) => l.status_resposta === 200).length;
+    const erro = total - sucesso;
+    const taxa = total === 0 ? 0 : Math.round((sucesso / total) * 100);
+
+    const mapa = new Map<string, { evento: string; Sucesso: number; Erro: number }>();
+    for (const l of logs) {
+      const chave = l.evento_meta || "—";
+      const linha = mapa.get(chave) ?? { evento: chave, Sucesso: 0, Erro: 0 };
+      if (l.status_resposta === 200) linha.Sucesso += 1;
+      else linha.Erro += 1;
+      mapa.set(chave, linha);
+    }
+    const porEvento = [...mapa.values()].sort(
+      (a, b) => b.Sucesso + b.Erro - (a.Sucesso + a.Erro)
+    );
+
+    // Agrupa as falhas pelo código de status, para ver de relance o que domina.
+    const statusMap = new Map<string, number>();
+    for (const l of logs) {
+      if (l.status_resposta === 200) continue;
+      const chave = l.status_resposta === 0 || l.status_resposta === null ? "Falha de rede" : `HTTP ${l.status_resposta}`;
+      statusMap.set(chave, (statusMap.get(chave) ?? 0) + 1);
+    }
+    const errosPorTipo = [...statusMap.entries()].sort((a, b) => b[1] - a[1]);
+
+    return { total, sucesso, erro, taxa, porEvento, errosPorTipo };
+  }, [logs]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Resumo dos Disparos</CardTitle>
+        <CardDescription>Resultado dos eventos no período e filtros selecionados abaixo</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard icon={<Send className="h-4 w-4" />} label="Disparos" value={total} />
+          <StatCard icon={<CheckCircle2 className="h-4 w-4" />} label="Sucesso" value={sucesso} tone="sucesso" />
+          <StatCard icon={<XCircle className="h-4 w-4" />} label="Com erro" value={erro} tone="erro" />
+          <StatCard
+            icon={<Percent className="h-4 w-4" />}
+            label="Taxa de sucesso"
+            value={`${taxa}%`}
+            hint={total === 0 ? "sem dados" : `${sucesso} de ${total}`}
+          />
+        </div>
+
+        {total === 0 ? (
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            Nenhum disparo no período selecionado.
+          </p>
+        ) : (
+          <>
+            <div>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">Por evento</p>
+              <ResponsiveContainer width="100%" height={Math.max(porEvento.length * 44 + 40, 140)}>
+                <BarChart data={porEvento} layout="vertical" margin={{ left: 10, right: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }} />
+                  <YAxis
+                    type="category"
+                    dataKey="evento"
+                    width={130}
+                    tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+                  />
+                  <RechartsTooltip
+                    contentStyle={{
+                      borderRadius: 8,
+                      border: "1px solid hsl(var(--border))",
+                      background: "hsl(var(--card))",
+                      color: "hsl(var(--foreground))",
+                    }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="Sucesso" stackId="s" fill="hsl(var(--primary))" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="Erro" stackId="s" fill="hsl(var(--destructive))" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {errosPorTipo.length > 0 && (
+              <div>
+                <p className="mb-2 text-xs font-medium text-muted-foreground">Falhas por tipo</p>
+                <div className="flex flex-wrap gap-2">
+                  {errosPorTipo.map(([tipo, qtd]) => (
+                    <span
+                      key={tipo}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive"
+                    >
+                      {tipo}
+                      <span className="rounded-full bg-destructive/20 px-1.5">{qtd}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+/* ======== Section 3b: Histórico ======== */
+
+const DIAS_ANTIGOS = [7, 30, 90] as const;
+
 const LogsSection = ({ instanceId }: { instanceId: string }) => {
   const { toast } = useToast();
   const [logs, setLogs] = useState<LogEvento[]>([]);
@@ -378,8 +530,10 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
   // apagar sempre envia ids explícitos + instancia_id, para nunca existir um
   // delete sem filtro (que varreria a coleção inteira).
   const [marcados, setMarcados] = useState<Set<string>>(new Set());
-  const [confirmar, setConfirmar] = useState<"selecionados" | "erros" | null>(null);
+  const [confirmar, setConfirmar] = useState<"selecionados" | "erros" | "antigos" | null>(null);
   const [apagando, setApagando] = useState(false);
+  const [diasAntigos, setDiasAntigos] = useState<number>(30);
+  const [antigosCount, setAntigosCount] = useState<number | null>(null);
 
   // Filters
   const [filterEvento, setFilterEvento] = useState("__all__");
@@ -423,8 +577,27 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
     setLoading(false);
   }, [instanceId, filterEvento, filterEstagio, filterStatus, period, customStart, customEnd]);
 
+  // Corte para "antigos": tudo com criado_em anterior a hoje - diasAntigos.
+  // Calculado na hora do uso para não guardar uma data velha em estado.
+  const cortarEm = useCallback(
+    (dias: number) => new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString(),
+    []
+  );
+
+  // Conta quantos registros cairiam na limpeza por idade, independente dos
+  // filtros da tabela (a limpeza por idade varre todo o histórico da instância).
+  const fetchAntigos = useCallback(async () => {
+    const { count } = await supabase
+      .from("log_eventos_meta")
+      .select("id", { count: "exact", head: true })
+      .eq("instancia_id", instanceId)
+      .lt("criado_em", cortarEm(diasAntigos));
+    setAntigosCount(count ?? 0);
+  }, [instanceId, diasAntigos, cortarEm]);
+
   useEffect(() => { fetchDistincts(); }, [fetchDistincts]);
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
+  useEffect(() => { fetchAntigos(); }, [fetchAntigos]);
 
   // Ao recarregar a lista, descarta seleção de linhas que já não existem.
   useEffect(() => {
@@ -472,6 +645,31 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
     setMarcados(new Set());
     await fetchLogs();
     await fetchDistincts();
+    await fetchAntigos();
+  };
+
+  // Limpeza por idade: apaga tudo da instância anterior ao corte. Aqui o filtro
+  // é a própria data (lt), não uma lista de ids — então varre além das 200 linhas
+  // visíveis na tabela, que é o ponto de "limpar os antigos do banco".
+  const apagarAntigos = async () => {
+    setApagando(true);
+    const { error, count } = await supabase
+      .from("log_eventos_meta")
+      .delete()
+      .eq("instancia_id", instanceId)
+      .lt("criado_em", cortarEm(diasAntigos));
+    setApagando(false);
+    setConfirmar(null);
+
+    if (error) {
+      toast({ title: "Erro ao apagar", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: `${count ?? 0} registro(s) antigo(s) apagado(s)` });
+    setMarcados(new Set());
+    await fetchLogs();
+    await fetchDistincts();
+    await fetchAntigos();
   };
 
   const periodOptions = [
@@ -486,6 +684,8 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
 
   return (
     <>
+    <ResumoDisparos logs={logs} />
+
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
@@ -576,6 +776,36 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
           </div>
         </div>
 
+        {/* Limpeza por idade: independe dos filtros acima, varre todo o histórico */}
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-secondary/30 px-3 py-2">
+          <span className="text-xs text-muted-foreground">Limpar registros com mais de</span>
+          <Select value={String(diasAntigos)} onValueChange={(v) => setDiasAntigos(Number(v))}>
+            <SelectTrigger className="h-8 w-[110px] text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DIAS_ANTIGOS.map((d) => (
+                <SelectItem key={d} value={String(d)}>{d} dias</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-foreground">
+            {antigosCount === null
+              ? "verificando..."
+              : `${antigosCount} registro(s) no banco`}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-8 text-xs text-destructive hover:text-destructive"
+            disabled={apagando || !antigosCount}
+            onClick={() => setConfirmar("antigos")}
+          >
+            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+            Limpar antigos
+          </Button>
+        </div>
+
         {/* Table */}
         {logs.length === 0 ? (
           <p className="text-sm text-muted-foreground py-4 text-center">Nenhum evento encontrado com os filtros selecionados</p>
@@ -639,12 +869,18 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            {confirmar === "erros" ? "Limpar disparos com erro?" : "Apagar disparos selecionados?"}
+            {confirmar === "erros"
+              ? "Limpar disparos com erro?"
+              : confirmar === "antigos"
+                ? `Limpar disparos com mais de ${diasAntigos} dias?`
+                : "Apagar disparos selecionados?"}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {confirmar === "erros"
               ? `${idsComErro.length} registro(s) com falha serão removidos do histórico permanentemente. Isso não desfaz nem reenvia nada para a Meta — só limpa o log aqui.`
-              : `${marcados.size} registro(s) serão removidos do histórico permanentemente. Isso não desfaz nem reenvia nada para a Meta — só limpa o log aqui.`}
+              : confirmar === "antigos"
+                ? `${antigosCount ?? 0} registro(s) anteriores a ${formatDateBR(cortarEm(diasAntigos))} serão removidos do banco permanentemente, inclusive os que não aparecem na tabela. Isso não desfaz nem reenvia nada para a Meta — só limpa o log aqui.`
+                : `${marcados.size} registro(s) serão removidos do histórico permanentemente. Isso não desfaz nem reenvia nada para a Meta — só limpa o log aqui.`}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -654,6 +890,10 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
               // Sem fechar automaticamente: o apagar() controla o estado para o
               // botão poder mostrar "Apagando..." enquanto a requisição corre.
               e.preventDefault();
+              if (confirmar === "antigos") {
+                apagarAntigos();
+                return;
+              }
               apagar(confirmar === "erros" ? idsComErro : [...marcados]);
             }}
             disabled={apagando}
