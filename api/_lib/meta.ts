@@ -11,11 +11,17 @@ import { createHash } from "crypto";
 
 const GRAPH_VERSION = "v21.0";
 
+// Eventos de venda: a Meta exige currency + value em custom_data. Sem isso
+// responde 400 ("Moeda ausente para o evento de compra", subcode 2804010).
+const EVENTOS_COM_VALOR = new Set(["Purchase", "InitiateCheckout", "AddToCart"]);
+
 type MetaConfig = {
   pixel_id?: string;
   access_token?: string;
   ativo?: boolean | null;
   test_event_code?: string | null;
+  moeda?: string | null;
+  valor_padrao?: number | string | null;
 };
 
 type Mapeamento = {
@@ -107,6 +113,17 @@ export async function dispararEvento(
       action_source: "system_generated",
       user_data: userData,
     };
+
+    // Eventos de venda exigem moeda e valor: sem eles a Meta responde 400
+    // ("Moeda ausente para o evento de compra", error_subcode 2804010).
+    // O CRM não registra valor de venda por lead, então usamos o valor padrão
+    // configurado na instância (0 se não houver) e a moeda, que cai em BRL.
+    if (EVENTOS_COM_VALOR.has(eventoMeta)) {
+      const moeda = String(config.moeda ?? "").trim().toUpperCase() || "BRL";
+      const valorBruto = Number(config.valor_padrao ?? 0);
+      const valor = Number.isFinite(valorBruto) && valorBruto >= 0 ? valorBruto : 0;
+      evento.custom_data = { currency: moeda, value: valor };
+    }
 
     const payload: Record<string, unknown> = { data: [evento] };
     const testCode = String(config.test_event_code ?? "").trim();
