@@ -16,10 +16,21 @@ import { formatDateBR, formatPhone } from "@/lib/formatters";
 import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { PeriodFilter, PeriodKey, getDateRange } from "@/components/dashboard/PeriodFilter";
 
-// Esta integração envia action_source=business_messaging para WhatsApp.
-// Nesse contexto a Meta aceita LeadSubmitted para conversão de lead. Eventos
-// como Lead e Contact são eventos de site e retornam o erro 2804066.
-const META_EVENTS = ["LeadSubmitted"];
+// Esta integração envia action_source=system_generated: o evento é gerado pelo
+// CRM quando o lead avança de estágio no funil. Nesse modo a Meta aceita os
+// nomes de evento padrão (não há a lista restrita do business_messaging).
+const META_EVENTS = [
+  "Lead",
+  "CompleteRegistration",
+  "Schedule",
+  "Contact",
+  "Purchase",
+  "Subscribe",
+  "ViewContent",
+  "InitiateCheckout",
+  "AddToCart",
+  "CustomEvent",
+];
 
 /* ======== Main Page ======== */
 
@@ -280,7 +291,7 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Para conversas de WhatsApp, use <strong>LeadSubmitted</strong>. O evento <strong>Purchase</strong> será incluído quando o CRM registrar valor e moeda da venda.
+            Escolha o evento Meta que cada estágio do funil deve disparar. Os eventos são enviados como <strong>system_generated</strong> (gerados pelo CRM na mudança de estágio), então aceitam os nomes padrão da Meta.
           </p>
 
           {/* Table */}
