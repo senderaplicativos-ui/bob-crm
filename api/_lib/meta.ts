@@ -11,6 +11,17 @@ import { createHash } from "crypto";
 
 const GRAPH_VERSION = "v21.0";
 
+// Eventos aceitos para conversões originadas em uma conversa de WhatsApp.
+// "Lead" e "Contact" são eventos web válidos, mas a Meta os rejeita quando
+// action_source é business_messaging (erro 2804066).
+const EVENTOS_WHATSAPP_VALIDOS = new Set(["LeadSubmitted", "Purchase"]);
+
+// Mantém compatibilidade com mapeamentos salvos antes da correção da tela.
+// O valor normalizado também é gravado no banco na primeira utilização.
+function normalizarEventoWhatsApp(evento: string): string {
+  return evento.trim().toLowerCase() === "lead" ? "LeadSubmitted" : evento.trim();
+}
+
 type MetaConfig = {
   pixel_id?: string;
   access_token?: string;
@@ -86,8 +97,33 @@ export async function dispararEvento(
 
     if (!mapeamento) return;
     if (mapeamento.ativo === false) return;
-    const eventoMeta = String(mapeamento.evento_meta ?? "").trim();
-    if (!eventoMeta) return;
+    const eventoMetaOriginal = String(mapeamento.evento_meta ?? "").trim();
+    if (!eventoMetaOriginal) return;
+    const eventoMeta = normalizarEventoWhatsApp(eventoMetaOriginal);
+
+    // Não envia uma chamada que a Meta certamente rejeitará. Isso deixa o
+    // diagnóstico explícito no histórico e evita a sequência de respostas 400.
+    if (!EVENTOS_WHATSAPP_VALIDOS.has(eventoMeta)) {
+      await db.collection("log_eventos_meta").insertOne({
+        id: novoId(),
+        instancia_id: instanciaId,
+        evento_meta: eventoMetaOriginal,
+        estagio_origem: estagio,
+        telefone: soDigitos(telefone) || null,
+        status_resposta: 422,
+        resposta: `Evento "${eventoMetaOriginal}" não é válido para WhatsApp. Use LeadSubmitted para leads ou Purchase para vendas confirmadas.`,
+        criado_em: nowIso(),
+      });
+      return;
+    }
+
+    // Atualiza automaticamente o legado "Lead" para o nome exigido pela CAPI.
+    if (eventoMeta !== eventoMetaOriginal) {
+      await db.collection("mapeamento_eventos").updateOne(
+        { instancia_id: instanciaId, estagio_nome: estagio },
+        { $set: { evento_meta: eventoMeta, atualizado_em: nowIso() } }
+      );
+    }
 
     // 3) Monta o payload da API de Conversões.
     const telDigitos = soDigitos(telefone);

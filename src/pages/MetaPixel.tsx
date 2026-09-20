@@ -16,18 +16,10 @@ import { formatDateBR, formatPhone } from "@/lib/formatters";
 import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { PeriodFilter, PeriodKey, getDateRange } from "@/components/dashboard/PeriodFilter";
 
-const META_EVENTS = [
-  "Lead",
-  "CompleteRegistration",
-  "Schedule",
-  "Contact",
-  "Purchase",
-  "Subscribe",
-  "ViewContent",
-  "InitiateCheckout",
-  "AddToCart",
-  "CustomEvent",
-];
+// Esta integração envia action_source=business_messaging para WhatsApp.
+// Nesse contexto a Meta aceita LeadSubmitted para conversão de lead. Eventos
+// como Lead e Contact são eventos de site e retornam o erro 2804066.
+const META_EVENTS = ["LeadSubmitted"];
 
 /* ======== Main Page ======== */
 
@@ -78,7 +70,7 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
       setPixelId(data.pixel_id);
       setAccessToken(data.access_token);
       setAtivo(data.ativo ?? true);
-      setTestEventCode((data as any).test_event_code ?? "");
+      setTestEventCode((data as unknown as { test_event_code?: string | null }).test_event_code ?? "");
       setExistingId(data.id);
     } else {
       setPixelId("");
@@ -100,12 +92,12 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
     if (existingId) {
       await supabase
         .from("meta_config")
-        .update({ pixel_id: pixelId, access_token: accessToken, ativo, test_event_code: testEventCode.trim() || null, atualizado_em: new Date().toISOString() } as any)
+        .update({ pixel_id: pixelId, access_token: accessToken, ativo, test_event_code: testEventCode.trim() || null, atualizado_em: new Date().toISOString() } as Record<string, unknown>)
         .eq("id", existingId);
     } else {
       await supabase
         .from("meta_config")
-        .insert({ instancia_id: instanceId, pixel_id: pixelId, access_token: accessToken, ativo, test_event_code: testEventCode.trim() || null } as any);
+        .insert({ instancia_id: instanceId, pixel_id: pixelId, access_token: accessToken, ativo, test_event_code: testEventCode.trim() || null } as Record<string, unknown>);
     }
     toast({ title: "Configuração salva com sucesso" });
     setSaving(false);
@@ -178,7 +170,6 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
   // New row state
   const [newStage, setNewStage] = useState("");
   const [newEvent, setNewEvent] = useState("");
-  const [newCustomEvent, setNewCustomEvent] = useState("");
 
   const fetchMappings = useCallback(async () => {
     const { data } = await supabase
@@ -213,14 +204,9 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
       toast({ title: "Selecione estágio e evento", variant: "destructive" });
       return;
     }
-    const evento = newEvent === "CustomEvent" ? newCustomEvent.trim() : newEvent;
-    if (!evento) {
-      toast({ title: "Informe o nome do evento customizado", variant: "destructive" });
-      return;
-    }
     const { error } = await supabase
       .from("mapeamento_eventos")
-      .insert({ instancia_id: instanceId, estagio_nome: newStage, evento_meta: evento });
+      .insert({ instancia_id: instanceId, estagio_nome: newStage, evento_meta: newEvent });
     if (error) {
       if (error.code === "23505") {
         toast({ title: "Este estágio já está mapeado", variant: "destructive" });
@@ -232,7 +218,6 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
     toast({ title: "Mapeamento adicionado" });
     setNewStage("");
     setNewEvent("");
-    setNewCustomEvent("");
     fetchMappings();
   };
 
@@ -290,16 +275,13 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
                 </SelectContent>
               </Select>
             </div>
-            {newEvent === "CustomEvent" && (
-              <div className="flex-1 space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Nome do Evento</label>
-                <Input value={newCustomEvent} onChange={(e) => setNewCustomEvent(e.target.value)} placeholder="Nome customizado" />
-              </div>
-            )}
             <Button onClick={handleAdd} size="sm">
               <Plus className="mr-1 h-4 w-4" /> Adicionar
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Para conversas de WhatsApp, use <strong>LeadSubmitted</strong>. O evento <strong>Purchase</strong> será incluído quando o CRM registrar valor e moeda da venda.
+          </p>
 
           {/* Table */}
           {mappings.length === 0 ? (
