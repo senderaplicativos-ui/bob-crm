@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -369,8 +370,16 @@ const StatusResponseBadge = ({ status }: { status: number | null }) => {
 };
 
 const LogsSection = ({ instanceId }: { instanceId: string }) => {
+  const { toast } = useToast();
   const [logs, setLogs] = useState<LogEvento[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Seleção para limpeza do histórico. Guarda os ids marcados; a ação de
+  // apagar sempre envia ids explícitos + instancia_id, para nunca existir um
+  // delete sem filtro (que varreria a coleção inteira).
+  const [marcados, setMarcados] = useState<Set<string>>(new Set());
+  const [confirmar, setConfirmar] = useState<"selecionados" | "erros" | null>(null);
+  const [apagando, setApagando] = useState(false);
 
   // Filters
   const [filterEvento, setFilterEvento] = useState("__all__");
@@ -417,6 +426,54 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
   useEffect(() => { fetchDistincts(); }, [fetchDistincts]);
   useEffect(() => { fetchLogs(); }, [fetchLogs]);
 
+  // Ao recarregar a lista, descarta seleção de linhas que já não existem.
+  useEffect(() => {
+    setMarcados((atual) => {
+      if (atual.size === 0) return atual;
+      const visiveis = new Set(logs.map((l) => l.id));
+      const novo = new Set([...atual].filter((id) => visiveis.has(id)));
+      return novo.size === atual.size ? atual : novo;
+    });
+  }, [logs]);
+
+  const idsComErro = logs.filter((l) => l.status_resposta !== 200).map((l) => l.id);
+  const todosMarcados = logs.length > 0 && marcados.size === logs.length;
+
+  const alternar = (id: string) => {
+    setMarcados((atual) => {
+      const novo = new Set(atual);
+      novo.has(id) ? novo.delete(id) : novo.add(id);
+      return novo;
+    });
+  };
+
+  const alternarTodos = () => {
+    setMarcados(todosMarcados ? new Set() : new Set(logs.map((l) => l.id)));
+  };
+
+  // Apaga por lista explícita de ids. Nunca envia delete sem filtro, e mantém o
+  // eq(instancia_id) como cinto de segurança para não tocar em outra instância.
+  const apagar = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    setApagando(true);
+    const { error } = await supabase
+      .from("log_eventos_meta")
+      .delete()
+      .eq("instancia_id", instanceId)
+      .in("id", ids);
+    setApagando(false);
+    setConfirmar(null);
+
+    if (error) {
+      toast({ title: "Erro ao apagar", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: `${ids.length} registro(s) apagado(s)` });
+    setMarcados(new Set());
+    await fetchLogs();
+    await fetchDistincts();
+  };
+
   const periodOptions = [
     { key: "hoje" as PeriodKey, label: "Hoje" },
     { key: "hoje_ontem" as PeriodKey, label: "Hoje e Ontem" },
@@ -428,6 +485,7 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
   ];
 
   return (
+    <>
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
@@ -488,8 +546,35 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
           options={periodOptions}
         />
 
-        {/* Counter */}
-        <p className="text-xs text-muted-foreground">{logs.length} disparo(s) encontrado(s)</p>
+        {/* Contador + ações de limpeza */}
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs text-muted-foreground">
+            {logs.length} disparo(s) encontrado(s)
+            {marcados.size > 0 ? ` · ${marcados.size} selecionado(s)` : ""}
+          </p>
+          <div className="ml-auto flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs text-destructive hover:text-destructive"
+              disabled={apagando || idsComErro.length === 0}
+              onClick={() => setConfirmar("erros")}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              Limpar com erro ({idsComErro.length})
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs text-destructive hover:text-destructive"
+              disabled={apagando || marcados.size === 0}
+              onClick={() => setConfirmar("selecionados")}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+              Apagar selecionados
+            </Button>
+          </div>
+        </div>
 
         {/* Table */}
         {logs.length === 0 ? (
@@ -500,6 +585,13 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-secondary/50">
+                    <th className="px-3 py-2 w-10">
+                      <Checkbox
+                        checked={todosMarcados}
+                        onCheckedChange={alternarTodos}
+                        aria-label="Selecionar todos os disparos"
+                      />
+                    </th>
                     <th className="px-4 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">Data/Hora</th>
                     <th className="px-4 py-2 text-left font-medium text-muted-foreground">Evento</th>
                     <th className="px-4 py-2 text-left font-medium text-muted-foreground">Estágio</th>
@@ -511,6 +603,13 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
                 <tbody>
                   {logs.map((l) => (
                     <tr key={l.id} className="border-b border-border last:border-0">
+                      <td className="px-3 py-2">
+                        <Checkbox
+                          checked={marcados.has(l.id)}
+                          onCheckedChange={() => alternar(l.id)}
+                          aria-label={`Selecionar disparo ${l.evento_meta} de ${formatDateBR(l.criado_em)}`}
+                        />
+                      </td>
                       <td className="px-4 py-2 text-muted-foreground whitespace-nowrap">{formatDateBR(l.criado_em)}</td>
                       <td className="px-4 py-2 text-foreground font-medium">{l.evento_meta}</td>
                       <td className="px-4 py-2 text-muted-foreground">{l.estagio_origem || "—"}</td>
@@ -535,6 +634,37 @@ const LogsSection = ({ instanceId }: { instanceId: string }) => {
         )}
       </CardContent>
     </Card>
+
+    <AlertDialog open={!!confirmar} onOpenChange={(v) => !v && setConfirmar(null)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {confirmar === "erros" ? "Limpar disparos com erro?" : "Apagar disparos selecionados?"}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {confirmar === "erros"
+              ? `${idsComErro.length} registro(s) com falha serão removidos do histórico permanentemente. Isso não desfaz nem reenvia nada para a Meta — só limpa o log aqui.`
+              : `${marcados.size} registro(s) serão removidos do histórico permanentemente. Isso não desfaz nem reenvia nada para a Meta — só limpa o log aqui.`}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={apagando}>Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => {
+              // Sem fechar automaticamente: o apagar() controla o estado para o
+              // botão poder mostrar "Apagando..." enquanto a requisição corre.
+              e.preventDefault();
+              apagar(confirmar === "erros" ? idsComErro : [...marcados]);
+            }}
+            disabled={apagando}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {apagando ? "Apagando..." : "Apagar"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 };
 
