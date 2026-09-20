@@ -96,10 +96,16 @@ export async function dispararEvento(
       userData.ph = [hashSha256(telDigitos)];
     }
 
+    // action_source "business_messaging": o lead vem de uma conversa de WhatsApp,
+    // então mantemos a fonte de mensagens para preservar a atribuição ao anúncio
+    // de clique-para-WhatsApp. A Meta EXIGE o campo "messaging_channel" nesse caso
+    // (valores válidos: messenger | whatsapp | instagram); sem ele responde 400
+    // "Parâmetro de canal de mensagens ausente" (error_subcode 2804063).
     const evento: Record<string, unknown> = {
       event_name: eventoMeta,
       event_time: Math.floor(Date.now() / 1000),
       action_source: "business_messaging",
+      messaging_channel: "whatsapp",
       user_data: userData,
     };
 
