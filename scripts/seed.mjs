@@ -66,6 +66,9 @@ async function main() {
   await db.collection('instancias').createIndex({ nome: 1 });
   await db.collection('estagios_funil').createIndex({ ordem: 1 });
   await db.collection('links_rastreavel').createIndex({ click_id: 1 }, { sparse: true });
+  // lookup do webhook ao casar a conversa com o clique de anúncio
+  await db.collection('cliques_rastreavel').createIndex({ tracking_code: 1 }, { sparse: true });
+  await db.collection('cliques_rastreavel').createIndex({ telefone_destino: 1, usado: 1, criado_em: -1 });
   // id único em todas as coleções (compatibilidade com os UUIDs do Postgres)
   for (const nome of COLLECTIONS) {
     await db.collection(nome).createIndex({ id: 1 }, { unique: true, sparse: true });

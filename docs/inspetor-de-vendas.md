@@ -112,31 +112,45 @@ Custo: exige colocar o JS no site do cliente e capturar/guardar o `gclid` no web
 > código novo) e evoluir para a **Opção 2** quando quiser atribuição por
 > campanha/palavra-chave e conversão offline no Google Ads.
 
-### 3.3. O elo que falta: casar clique → conversa
+### 3.3. O elo que falta: casar clique → conversa ✅ IMPLEMENTADO (2026-09-20)
 
 Vale para as duas opções. O truque é o **texto pré-preenchido** do `wa.me`. Embutir um
 código curto de rastreio na mensagem (`t=`), por exemplo:
 
 ```
-Oi tudo bem? Tem disponibilidade de fazer um orçamento? [#a1b2c3]
+Oi tudo bem? Tem disponibilidade de fazer um orçamento? [#a1b2c3d4]
 ```
 
-Fluxo proposto:
+O que ficou no código:
 
-1. Em `go.ts`, ao gravar o clique, gerar um `tracking_code` curto (6-8 chars) e
-   incluí-lo tanto no documento de `cliques_rastreavel` quanto no texto do `wa.me`
-   (guardar também o `gclid`/`utm_*` no clique, quando vierem — Opção 2).
-2. No `webhook-evolution.ts`, ao receber a **primeira mensagem** de uma conversa,
-   procurar um `tracking_code` no texto (regex simples). Se achar, buscar o clique
-   correspondente **não usado** e:
-   - gravar `origem`, `campaign`, `ad` (e `gclid`) na conversa;
-   - marcar o clique como `usado: true` e preencher seu `conversa_id`.
-3. Alternativa/complemento sem poluir o texto: casar por **janela de tempo +
-   telefone destino** (clique recente na mesma instância cujo `telefone_destino`
-   bate), útil quando o cliente apaga o texto pré-preenchido.
+1. Em `api/go.ts`: cada clique gera um `tracking_code` (8 chars hex, via
+   `randomBytes(4)`), gravado no documento de `cliques_rastreavel` **e** embutido como
+   marcador `[#<code>]` ao final do texto pré-preenchido do `wa.me`.
+2. Em `api/webhook-evolution.ts`: `extrairTrackingCode()` acha o marcador na mensagem
+   (regex `\[#([0-9a-f]{8})\]`) e **limpa o texto** antes de tudo (regras e tela
+   trabalham sem o marcador). `casarCliqueRastreavel()` busca o clique **não usado**
+   correspondente e, para mensagem de **entrada**:
+   - carimba `origem` (= `source` do clique, upper), `campaign`, `ad` na conversa —
+     com **prioridade sobre a regra de palavra-chave** (só sobrescreve quando há clique
+     real);
+   - marca o clique `usado: true`, grava `conversa_id` e `casado_em`.
+3. **Fallback** sem depender do texto: se não achou por código, casa por
+   `telefone_destino` + janela de **30 min** (clique não usado mais recente), útil
+   quando o cliente apaga o texto pré-preenchido.
+4. Em `scripts/seed.mjs`: índice novo em `cliques_rastreavel.tracking_code` (sparse)
+   para o lookup ser rápido.
 
 Feito isso, a regra de palavra "orçamento → GOOGLE" pode ser **aposentada** para o
 tráfego que passa pelo link (fica só como reserva para quem chega sem passar por ele).
+
+> **Falta para ativar de ponta a ponta** (fora do código, ações de operação):
+> (a) no site, apontar o `href` do botão de WhatsApp para o link do Bob CRM
+> (`/go/<instancia>?s=google_ads&t=...`, gerado na aba Links) em vez do `wa.me` direto;
+> (b) rodar `node scripts/seed.mjs` uma vez contra o Mongo de produção para criar o
+> índice (opcional — sem ele o lookup ainda funciona, só mais lento);
+> (c) enquanto o site não estiver apontado, aplicar o Nível 1 na aba Regras (mudar de
+> "Contém" `orçamento` para "Exato" com a frase completa do botão) para matar o falso
+> positivo.
 
 ### 3.4. Nota sobre atribuição por anúncio (Meta / clique-para-WhatsApp)
 
@@ -298,12 +312,74 @@ IA vira também uma fonte de conversões qualificadas para a Meta.
 
 ## 8. Resumo de mudanças previstas (para quando for implementar)
 
-- `api/go.ts` — gerar/gravar `tracking_code`, incluir no texto do `wa.me`.
-- `api/webhook-evolution.ts` — casar `tracking_code`/janela+telefone e preencher
-  origem + `conversa_id` do clique.
+Parte A — rastreio direto (**FEITO**, sessão 2026-09-20):
+
+- ✅ `api/go.ts` — gera `tracking_code` (8 chars hex), grava no clique e embute o
+  marcador `[#xxxxxxxx]` no texto do `wa.me`.
+- ✅ `api/webhook-evolution.ts` — extrai o marcador da 1ª mensagem, limpa o texto,
+  casa com o clique não usado (fallback: telefone + janela de 30 min) e carimba
+  `origem`/`campaign`/`ad` na conversa, com prioridade sobre a regra de palavra.
+- ✅ `scripts/seed.mjs` — índice em `cliques_rastreavel.tracking_code`.
+
+Parte B/C — análise por IA (ainda a implementar):
+
 - `api/inspetor-cron.ts` — **novo**: job noturno de análise por IA.
 - `api/_lib/ai.ts` — **novo**: cliente do provedor de IA (lê `AI_*`).
 - `vercel.json` — entrada de `crons`.
 - `scripts/seed.mjs` — criar coleção/índices de `analises_venda`.
 - `src/pages/Inspetor.tsx` + rota/menu — **nova** tela de revisão.
 - `.env.example` — `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, `INSPETOR_LIMITE_MENSAL`.
+
+## 9. Deploy do Nível 2 (rastreio real) — passo a passo
+
+O código do Nível 2 já está no repositório (`api/go.ts`, `api/webhook-evolution.ts`,
+`scripts/seed.mjs`). Para ativar de ponta a ponta:
+
+1. **Commit + push** dos três arquivos. Atenção ao churn de CRLF do mount
+   Plan9/Windows: fazer stage só desses arquivos por nome, nunca "Stage All".
+   Conferir que `.env` não entrou (só `.env.example` é rastreado).
+   Push com refspec explícito: `git push origin HEAD:main`.
+2. **Deploy automático da Vercel** ao receber o push em `main`.
+3. **Rodar o seed** uma vez contra o Mongo de produção (`node scripts/seed.mjs`)
+   para criar o índice de `cliques_rastreavel.tracking_code`. Não é obrigatório
+   para funcionar — sem o índice o lookup ainda ocorre, só fica mais lento
+   conforme a coleção cresce.
+4. **Apontar o botão do site** para o link do Bob CRM. Hoje o botão de WhatsApp
+   aponta direto para `wa.me`; trocar o `href` pelo link rastreável
+   (`/go/<instancia>?s=google_ads&t=<mensagem>`, gerado na aba **Links**). Sem
+   essa troca o Nível 2 não recebe cliques e a origem continua vindo só da regra.
+
+### Nível 1 (paliativo imediato, sem código)
+
+Enquanto o site não estiver apontado para o link, na aba **Regras** editar a regra
+de ORIGEM que hoje marca GOOGLE:
+
+- Modo: **Contém** → **Exato**
+- Texto: `orçamento` → frase completa do botão
+  (`Oi tudo bem? Tem disponibilidade de fazer um orçamento?`)
+
+Assim só a mensagem exata do botão marca GOOGLE, eliminando o falso positivo de
+qualquer pessoa que digite "orçamento" vinda de outra fonte. Quando o Nível 2
+estiver ativo, essa regra vira só rede de segurança.
+
+## 9. Deploy da Parte A (rastreio direto)
+
+Passos para ativar o rastreio real de ponta a ponta depois de subir o código:
+
+1. **Commit + push** dos três arquivos (`api/go.ts`, `api/webhook-evolution.ts`,
+   `scripts/seed.mjs`). Stage por nome — o mount gera churn de CRLF em dezenas de
+   arquivos sem mudança real. Conferir que `.env` não entrou. Push:
+   `git push origin HEAD:main`. A Vercel faz o deploy automático.
+2. **Seed do índice** (uma vez, contra o Mongo de produção): `node scripts/seed.mjs`.
+   Opcional para funcionar — sem o índice o lookup ainda acontece, só mais lento.
+3. **Apontar o botão do site** para o link do Bob CRM. Hoje o botão de WhatsApp
+   aponta pro `wa.me` direto; trocar o `href` pelo link rastreável gerado na aba
+   **Links** (`/go/<instancia>?s=google_ads&t=...`). Sem isso o Nível 2 não recebe
+   cliques e a origem continua vindo só da regra de palavra-chave.
+4. **Enquanto o site não estiver apontado** (paliativo — Nível 1): na aba **Regras**,
+   mudar a regra de ORIGEM de modo **Contém** `orçamento` para modo **Exato** com a
+   frase completa do botão (`Oi tudo bem? Tem disponibilidade de fazer um orçamento?`).
+   Mata o falso positivo de quem digita "orçamento" vindo de outra fonte.
+5. **Validar:** clicar no próprio link `/go`, mandar a mensagem, e conferir na
+   conversa que a origem foi carimbada a partir do clique (não da regra), e que o
+   clique ficou `usado: true` com o `conversa_id` preenchido.

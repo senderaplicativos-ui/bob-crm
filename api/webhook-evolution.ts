@@ -410,6 +410,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ ok: true, ignored: 'sem remoteJid' });
     }
 
+    // Se a mensagem trouxe o marcador de rastreio do link /go ("[#xxxxxxxx]"),
+    // separa o código e limpa o texto — o resto do fluxo (regras, gravação,
+    // tela) trabalha com o texto sem o marcador.
+    const { code: trackingCode, textoLimpo } = extrairTrackingCode(msg.texto);
+    msg.texto = textoLimpo;
+
     // Grupo (@g.us), newsletter/canal (@newsletter) e status (status@broadcast)
     // não são leads — são ruído no CRM. Só tratamos conversa individual.
     if (/@(g\.us|newsletter|broadcast)$/i.test(msg.remoteJid)) {
@@ -551,6 +557,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const conversa = await db.collection('conversas').findOne(convQuery);
     const conversaId = conversa?.id ?? convId;
+
+    // Rastreio real: se esta mensagem de ENTRADA veio de um clique em link /go
+    // (marcador na mensagem ou fallback por telefone+janela), casa a conversa
+    // com o clique e carimba a origem de verdade. Isso tem prioridade sobre a
+    // regra de palavra-chave: só sobrescreve quando o clique existe, e a origem
+    // vem do clique (source), não de um "chute" pelo texto. Best-effort.
+    if (!msg.fromMe) {
+      const doClique = await casarCliqueRastreavel(
+        db,
+        instanciaId,
+        telefone,
+        conversaId,
+        trackingCode,
+      );
+      if (doClique) {
+        const stamp: Record<string, unknown> = { atualizado_em: nowIso() };
+        if (doClique.origem) stamp.origem = doClique.origem;
+        if (doClique.campaign) stamp.campaign = doClique.campaign;
+        if (doClique.ad) stamp.ad = doClique.ad;
+        await db.collection('conversas').updateOne(convQuery, { $set: stamp });
+      }
+    }
 
     // Dispara evento para a Meta quando uma regra de STATUS moveu o lead de
     // estágio. Só quando o status realmente mudou (era intocado e a regra
