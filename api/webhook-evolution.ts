@@ -185,6 +185,73 @@ async function aplicarRegras(
   }
 }
 
+// Extrai o código de rastreio do marcador "[#xxxxxxxx]" que o link /go embute
+// na primeira mensagem. Devolve o código (só hex) e o texto limpo, sem o
+// marcador — para não poluir a tela de conversa nem as regras de palavra-chave.
+function extrairTrackingCode(texto: string): { code: string | null; textoLimpo: string } {
+  if (!texto) return { code: null, textoLimpo: texto };
+  const m = texto.match(/\[#([0-9a-f]{8})\]/i);
+  if (!m) return { code: null, textoLimpo: texto };
+  const textoLimpo = texto.replace(/\s*\[#[0-9a-f]{8}\]\s*/i, " ").trim();
+  return { code: m[1].toLowerCase(), textoLimpo };
+}
+
+// Casa a conversa recém-criada com o clique de anúncio que a originou.
+// Estratégia principal: o código de rastreio que veio no marcador da mensagem.
+// Fallback: clique não usado, para o mesmo telefone de destino, dentro de uma
+// janela de tempo curta (o cliente clica e manda a mensagem em seguida).
+// Devolve o que deve ser carimbado na conversa (origem/campaign/ad) ou null.
+// Best-effort: qualquer falha aqui não pode derrubar o webhook.
+async function casarCliqueRastreavel(
+  db: any,
+  instanciaId: string | null,
+  telefone: string,
+  conversaId: string,
+  trackingCode: string | null,
+): Promise<{ origem?: string; campaign?: string; ad?: string } | null> {
+  try {
+    let clique: any = null;
+
+    if (trackingCode) {
+      clique = await db.collection("cliques_rastreavel").findOne({
+        tracking_code: trackingCode,
+        usado: { $ne: true },
+      });
+    }
+
+    // Fallback por telefone + janela de tempo (30 min) quando o cliente apagou
+    // o marcador antes de enviar. Pega o clique mais recente ainda não usado.
+    if (!clique && telefone) {
+      const limite = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      clique = await db.collection("cliques_rastreavel").findOne(
+        {
+          telefone_destino: telefone,
+          usado: { $ne: true },
+          criado_em: { $gte: limite },
+        },
+        { sort: { criado_em: -1 } },
+      );
+    }
+
+    if (!clique) return null;
+
+    // Marca o clique como consumido e amarra à conversa.
+    await db.collection("cliques_rastreavel").updateOne(
+      { id: clique.id },
+      { $set: { usado: true, conversa_id: conversaId, casado_em: nowIso() } },
+    );
+
+    const out: { origem?: string; campaign?: string; ad?: string } = {};
+    if (clique.source) out.origem = String(clique.source).toUpperCase();
+    if (clique.campaign) out.campaign = String(clique.campaign);
+    if (clique.ad) out.ad = String(clique.ad);
+    return out;
+  } catch {
+    // rastreio é best-effort: se falhar, a conversa segue sem origem carimbada
+    return null;
+  }
+}
+
 // Mescla a conversa "órfã" (a que ficou gravada com o LID no campo telefone) na
 // conversa do telefone real. Acontece quando o lead chega de anúncio: a primeira
 // mensagem vem só com o @lid e, quando a instância responde, a Evolution passa a
