@@ -27,13 +27,20 @@ export function useFunnelStages() {
   const fetchStages = useCallback(async () => {
     if (!selected) return;
     setLoading(true);
+    // Sem filtro de ativo no banco: documentos antigos do Mongo foram criados
+    // sem o campo `ativo` (o Mongo é schemaless, sem DEFAULT true do Postgres)
+    // e um eq("ativo", true) os tornaria invisíveis. Filtra no cliente.
     const { data } = await supabase
       .from("estagios_funil")
       .select("*")
       .eq("instancia_id", selected.id)
-      .eq("ativo", true)
       .order("ordem", { ascending: true });
-    if (data) setStages(data as EstagioFunil[]);
+    if (data) {
+      const lista = (data as EstagioFunil[])
+        .filter((s) => s.ativo !== false)
+        .sort((a, b) => (a.ordem ?? 0) - (b.ordem ?? 0));
+      setStages(lista);
+    }
     setLoading(false);
   }, [selected]);
 

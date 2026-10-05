@@ -14,7 +14,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useToast } from "@/hooks/use-toast";
 import { useFunnelStages } from "@/hooks/useFunnelStages";
 import { formatDateBR, formatPhone } from "@/lib/formatters";
-import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff, Send, CheckCircle2, XCircle, Percent } from "lucide-react";
+import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff, Send, CheckCircle2, XCircle, Percent, Copy, Check, ExternalLink } from "lucide-react";
 import { PeriodFilter, PeriodKey, getDateRange } from "@/components/dashboard/PeriodFilter";
 import {
   ResponsiveContainer,
@@ -91,6 +91,9 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
 
   // Último disparo (só leitura, para o selo de status no card).
   const [ultimo, setUltimo] = useState<{ status: number | null; quando: string | null } | null>(null);
+
+  // Feedback do botão "Copiar link".
+  const [copiado, setCopiado] = useState(false);
 
   const fetchConfig = useCallback(async () => {
     const { data } = await supabase
@@ -349,15 +352,40 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
           <Button onClick={handleSave} disabled={saving}>
             <Save className="mr-1.5 h-4 w-4" /> Salvar
           </Button>
-          <a
-            href={eventsManagerUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!pixelIdValido}
+            title={pixelIdValido ? "Abrir o Events Manager neste dataset" : "Preencha um Pixel ID válido primeiro"}
+            onClick={() => window.open(eventsManagerUrl, "_blank", "noopener,noreferrer")}
           >
-            Abrir Events Manager
-          </a>
+            <ExternalLink className="mr-1.5 h-4 w-4" /> Abrir Events Manager
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!pixelIdValido}
+            title="Copiar o link do Events Manager (funciona mesmo sem estar logado no Facebook — é só colar depois de entrar)"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(eventsManagerUrl);
+                setCopiado(true);
+                setTimeout(() => setCopiado(false), 2000);
+              } catch {
+                toast({ title: "Não foi possível copiar", description: eventsManagerUrl, variant: "destructive" });
+              }
+            }}
+          >
+            {copiado ? <Check className="mr-1.5 h-4 w-4 text-primary" /> : <Copy className="mr-1.5 h-4 w-4" />}
+            {copiado ? "Copiado!" : "Copiar link"}
+          </Button>
         </div>
+        {!pixelIdValido && (
+          <p className="text-xs text-muted-foreground">
+            O link do Events Manager fica disponível após preencher um Pixel ID válido.
+            Você não precisa estar logado para copiar — é só colar no navegador depois de entrar no Facebook.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
