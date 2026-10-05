@@ -266,7 +266,7 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
       </CardHeader>
       <CardContent className="space-y-4">
         {modoTeste && (
-          <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+          <div className="rounded-lg border border-yellow-600/50 bg-yellow-500/15 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-200">
             <strong>Modo teste ativo.</strong> Os eventos vão para a aba "Eventos de teste"
             e <strong>não otimizam a campanha</strong>. Remova o código após validar.
           </div>
