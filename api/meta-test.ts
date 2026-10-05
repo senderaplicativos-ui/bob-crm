@@ -78,12 +78,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    if (modo === "conexao") {
-      // GET no dataset: não envia evento nenhum, só valida ID + token.
+    // Envia um Lead fictício com test_event_code. É a validação definitiva,
+    // porque usa exatamente a mesma rota e permissão do envio real (POST
+    // /{pixel}/events). Retorna { ok, status, texto, dados }.
+    const enviarTeste = async (testCode: string) => {
+      const telefoneFake = createHash("sha256").update("5511999999999").digest("hex");
+      const payload = {
+        data: [
+          {
+            event_name: "Lead",
+            event_time: Math.floor(Date.now() / 1000),
+            action_source: "system_generated",
+            user_data: { ph: [telefoneFake] },
+          },
+        ],
+        test_event_code: testCode,
+      };
       const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(
         pixelId
-      )}?access_token=${encodeURIComponent(accessToken)}`;
-      const resp = await fetch(url);
+      )}/events?access_token=${encodeURIComponent(accessToken)}`;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
       const texto = await resp.text();
       let dados: unknown = null;
       try {
@@ -91,15 +109,69 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } catch {
         // Mantém o texto bruto para a mensagem de erro.
       }
-      if (!resp.ok) {
-        res.status(200).json({ ok: false, status: resp.status, error: extrairErroMeta(dados, texto) });
+      return { ok: resp.ok, status: resp.status, texto, dados };
+    };
+
+    if (modo === "conexao") {
+      // Passo 1: GET no dataset (não envia nada). Quando funciona, confirma
+      // ID + token e devolve o nome do conjunto de dados.
+      const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(
+        pixelId
+      )}?fields=name&access_token=${encodeURIComponent(accessToken)}`;
+      let getOk = false;
+      let getNome: string | null = null;
+      let getErro: string | null = null;
+      try {
+        const resp = await fetch(url);
+        const texto = await resp.text();
+        let dados: unknown = null;
+        try {
+          dados = JSON.parse(texto);
+        } catch {
+          // Mantém o texto bruto para a mensagem de erro.
+        }
+        if (resp.ok) {
+          getOk = true;
+          getNome =
+            dados && typeof dados === "object" && "name" in dados
+              ? String((dados as { name: unknown }).name)
+              : null;
+        } else {
+          getErro = extrairErroMeta(dados, texto);
+        }
+      } catch (err) {
+        getErro = err instanceof Error ? err.message : "erro de rede";
+      }
+      if (getOk) {
+        res.status(200).json({ ok: true, id: pixelId, nome: getNome, via: "leitura" });
         return;
       }
-      const nome =
-        dados && typeof dados === "object" && "name" in dados
-          ? String((dados as { name: unknown }).name)
-          : null;
-      res.status(200).json({ ok: true, id: pixelId, nome });
+
+      // Passo 2 (fallback): o token gerado em "Configurar API de Conversões"
+      // geralmente só tem permissão de ENVIO, e o GET acima falha com erro de
+      // permissão mesmo com tudo certo. Nesse caso valida pela rota real de
+      // envio, com um evento de teste — se o POST passar, o envio real funciona.
+      const codigoConexao =
+        String(body?.test_event_code ?? config?.test_event_code ?? "").trim() || "TESTECONEXAO";
+      const post = await enviarTeste(codigoConexao);
+      if (post.ok) {
+        res.status(200).json({
+          ok: true,
+          id: pixelId,
+          nome: null,
+          via: "envio",
+          codigoUsado: codigoConexao,
+          detalhe: post.texto.slice(0, 300),
+          avisoLeitura: getErro,
+        });
+        return;
+      }
+      res.status(200).json({
+        ok: false,
+        status: post.status,
+        error: extrairErroMeta(post.dados, post.texto),
+        detalheLeitura: getErro,
+      });
       return;
     }
 
@@ -113,38 +185,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       return;
     }
-    const telefoneFake = createHash("sha256").update("5511999999999").digest("hex");
-    const payload = {
-      data: [
-        {
-          event_name: "Lead",
-          event_time: Math.floor(Date.now() / 1000),
-          action_source: "system_generated",
-          user_data: { ph: [telefoneFake] },
-        },
-      ],
-      test_event_code: testCode,
-    };
-    const url = `https://graph.facebook.com/${GRAPH_VERSION}/${encodeURIComponent(
-      pixelId
-    )}/events?access_token=${encodeURIComponent(accessToken)}`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const texto = await resp.text();
-    let dados: unknown = null;
-    try {
-      dados = JSON.parse(texto);
-    } catch {
-      // Mantém o texto bruto para a mensagem de erro.
-    }
-    if (!resp.ok) {
-      res.status(200).json({ ok: false, status: resp.status, error: extrairErroMeta(dados, texto) });
+    const post = await enviarTeste(testCode);
+    if (!post.ok) {
+      res.status(200).json({ ok: false, status: post.status, error: extrairErroMeta(post.dados, post.texto) });
       return;
     }
-    res.status(200).json({ ok: true, status: resp.status, detalhe: texto.slice(0, 300) });
+    res.status(200).json({ ok: true, status: post.status, detalhe: post.texto.slice(0, 300) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Internal error" });
   }

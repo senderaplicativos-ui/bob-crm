@@ -193,16 +193,33 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
         },
         body: JSON.stringify({ instancia_id: instanceId, modo, test_event_code: testEventCode.trim() || undefined }),
       });
-      const corpo = await res.json().catch(() => ({})) as { ok?: boolean; error?: string; nome?: string | null };
+      const corpo = await res.json().catch(() => ({})) as {
+        ok?: boolean; error?: string; nome?: string | null; via?: string;
+        codigoUsado?: string; detalheLeitura?: string;
+      };
       if (corpo.ok) {
-        setTesteMsg({
-          ok: true,
-          texto: modo === "conexao"
-            ? `Conexão OK — dataset ${pixelId.trim()}${corpo.nome ? ` ("${corpo.nome}")` : ""} aceitou o token.`
-            : "Evento de teste enviado — confira na aba Eventos de teste do Events Manager.",
-        });
+        if (modo === "evento") {
+          setTesteMsg({
+            ok: true,
+            texto: "Evento de teste enviado — confira na aba Eventos de teste do Events Manager.",
+          });
+        } else if (corpo.via === "envio") {
+          setTesteMsg({
+            ok: true,
+            texto: `Conexão OK — o envio real funciona (validado com um evento de teste "${corpo.codigoUsado}"). ` +
+              `Procure por esse código na aba Eventos de teste. ` +
+              (corpo.nome ? `Dataset: "${corpo.nome}". ` : "") +
+              `Obs.: a leitura do dataset falhou (${corpo.detalheLeitura ?? "sem detalhe"}) — normal quando o token só tem permissão de envio.`,
+          });
+        } else {
+          setTesteMsg({
+            ok: true,
+            texto: `Conexão OK — dataset ${pixelId.trim()}${corpo.nome ? ` ("${corpo.nome}")` : ""} aceitou o token.`,
+          });
+        }
       } else {
-        setTesteMsg({ ok: false, texto: corpo.error || `Falha (HTTP ${res.status}).` });
+        const extra = corpo.detalheLeitura ? ` Leitura: ${corpo.detalheLeitura}.` : "";
+        setTesteMsg({ ok: false, texto: (corpo.error || `Falha (HTTP ${res.status}).`) + extra });
       }
     } catch (err) {
       setTesteMsg({ ok: false, texto: err instanceof Error ? err.message : "Erro de rede." });
