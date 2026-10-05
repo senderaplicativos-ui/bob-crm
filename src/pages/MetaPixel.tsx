@@ -10,11 +10,12 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { useFunnelStages } from "@/hooks/useFunnelStages";
 import { formatDateBR, formatPhone } from "@/lib/formatters";
-import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff, Send, CheckCircle2, XCircle, Percent, Copy, Check, ExternalLink } from "lucide-react";
+import { Save, Plus, Trash2, RefreshCw, Eye, EyeOff, Send, CheckCircle2, XCircle, Percent, Copy, Check, ExternalLink, HelpCircle } from "lucide-react";
 import { PeriodFilter, PeriodKey, getDateRange } from "@/components/dashboard/PeriodFilter";
 import {
   ResponsiveContainer,
@@ -41,6 +42,21 @@ const META_EVENTS = [
   "InitiateCheckout",
   "AddToCart",
   "CustomEvent",
+];
+
+// Guia rápido: o que cada evento significa + em qual estágio do funil usar.
+// Exibido no popup de ajuda (?) da seção de mapeamento.
+const AJUDA_EVENTOS: { evento: string; exemplo: string; estagio: string }[] = [
+  { evento: "Lead", exemplo: "Visitante virou lead: pediu contato, chamou no WhatsApp, preencheu formulário.", estagio: "LEAD" },
+  { evento: "Contact", exemplo: "Primeira conversa iniciada com o lead (atendimento começou).", estagio: "CONTATO" },
+  { evento: "Schedule", exemplo: "Visita, reunião ou atendimento agendado com o cliente.", estagio: "AGENDADO / VISITA" },
+  { evento: "InitiateCheckout", exemplo: "Cliente pediu orçamento, proposta ou condições de pagamento.", estagio: "ORÇAMENTO" },
+  { evento: "AddToCart", exemplo: "Cliente escolheu o produto/serviço e está quase fechando.", estagio: "NEGOCIAÇÃO" },
+  { evento: "Purchase", exemplo: "Venda concluída e paga. Use com moeda + valor para medir o retorno (ROAS).", estagio: "COMPROU / VENDIDO" },
+  { evento: "CompleteRegistration", exemplo: "Cadastro completo: ficha do cliente preenchida, conta criada.", estagio: "CADASTRO" },
+  { evento: "ViewContent", exemplo: "Lead viu catálogo, tabela de preços ou página de detalhes.", estagio: "INTERESSE" },
+  { evento: "Subscribe", exemplo: "Assinatura ou plano recorrente contratado.", estagio: "ASSINATURA" },
+  { evento: "CustomEvent", exemplo: "Qualquer outro momento do seu funil (ex.: pós-venda, garantia).", estagio: "qualquer estágio" },
 ];
 
 /* ======== Main Page ======== */
@@ -427,6 +443,9 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
   // New row state
   const [newStage, setNewStage] = useState("");
   const [newEvent, setNewEvent] = useState("");
+  // Popup de ajuda dos eventos (? ao lado do campo + nas linhas da tabela)
+  const [guiaAberto, setGuiaAberto] = useState(false);
+  const [eventoFoco, setEventoFoco] = useState<string | null>(null);
 
   const fetchMappings = useCallback(async () => {
     const { data } = await supabase
@@ -522,7 +541,18 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
               </Select>
             </div>
             <div className="flex-1 space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Evento Meta</label>
+              <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                Evento Meta
+                <button
+                  type="button"
+                  onClick={() => { setEventoFoco(null); setGuiaAberto(true); }}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                  title="Ver o que significa cada evento"
+                  aria-label="Ajuda sobre eventos Meta"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" />
+                </button>
+              </label>
               <Select value={newEvent} onValueChange={setNewEvent}>
                 <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
                 <SelectContent>
@@ -558,7 +588,20 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
                   {mappings.map((m) => (
                     <tr key={m.id} className="border-b border-border last:border-0">
                       <td className="px-4 py-2 text-foreground">{m.estagio_nome}</td>
-                      <td className="px-4 py-2 text-foreground">{m.evento_meta}</td>
+                      <td className="px-4 py-2 text-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          {m.evento_meta}
+                          <button
+                            type="button"
+                            onClick={() => { setEventoFoco(m.evento_meta); setGuiaAberto(true); }}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            title={`O que significa ${m.evento_meta}?`}
+                            aria-label={`Ajuda sobre ${m.evento_meta}`}
+                          >
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                      </td>
                       <td className="px-4 py-2 text-center">
                         <Switch checked={m.ativo ?? true} onCheckedChange={() => toggleAtivo(m)} />
                       </td>
@@ -592,6 +635,37 @@ const MappingSection = ({ instanceId }: { instanceId: string }) => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Popup de ajuda: o que significa cada evento + estágio sugerido */}
+      <Dialog open={guiaAberto} onOpenChange={setGuiaAberto}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {eventoFoco ? `Evento ${eventoFoco}` : "Qual evento usar em cada estágio?"}
+            </DialogTitle>
+            <DialogDescription>
+              Cada linha do funil dispara um evento no Pixel. Veja o significado e onde encaixar.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {AJUDA_EVENTOS.filter((a) => !eventoFoco || a.evento === eventoFoco).map((a) => (
+              <div key={a.evento} className="rounded-lg border border-border p-3">
+                <p className="text-sm font-semibold text-foreground">{a.evento}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{a.exemplo}</p>
+                <p className="mt-1 text-xs">
+                  <span className="font-medium text-foreground">Estágio sugerido: </span>
+                  <span className="text-muted-foreground">{a.estagio}</span>
+                </p>
+              </div>
+            ))}
+            {eventoFoco && !AJUDA_EVENTOS.some((a) => a.evento === eventoFoco) && (
+              <p className="text-sm text-muted-foreground">
+                Evento personalizado: use para qualquer momento do seu funil que não se encaixe nos padrões acima.
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };
