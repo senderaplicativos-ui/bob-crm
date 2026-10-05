@@ -434,31 +434,40 @@ export type Database = {
           access_token: string
           ativo: boolean | null
           atualizado_em: string | null
+          apelido: string | null
           criado_em: string | null
           id: string
           instancia_id: string
+          moeda: string | null
           pixel_id: string
           test_event_code: string | null
+          valor_padrao: number | null
         }
         Insert: {
           access_token: string
           ativo?: boolean | null
           atualizado_em?: string | null
+          apelido?: string | null
           criado_em?: string | null
           id?: string
           instancia_id: string
+          moeda?: string | null
           pixel_id: string
           test_event_code?: string | null
+          valor_padrao?: number | null
         }
         Update: {
           access_token?: string
           ativo?: boolean | null
           atualizado_em?: string | null
+          apelido?: string | null
           criado_em?: string | null
           id?: string
           instancia_id?: string
+          moeda?: string | null
           pixel_id?: string
           test_event_code?: string | null
+          valor_padrao?: number | null
         }
         Relationships: [
           {

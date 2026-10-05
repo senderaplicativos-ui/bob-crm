@@ -74,13 +74,23 @@ const MetaPixel = () => {
 
 const ConfigSection = ({ instanceId }: { instanceId: string }) => {
   const { toast } = useToast();
+  const [apelido, setApelido] = useState("");
   const [pixelId, setPixelId] = useState("");
   const [accessToken, setAccessToken] = useState("");
   const [ativo, setAtivo] = useState(true);
   const [existingId, setExistingId] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
   const [testEventCode, setTestEventCode] = useState("");
+  const [moeda, setMoeda] = useState("BRL");
+  const [valorPadrao, setValorPadrao] = useState("0");
   const [saving, setSaving] = useState(false);
+
+  // Teste de conexão/evento (endpoint /api/meta-test, sem gravar no histórico).
+  const [testando, setTestando] = useState<"conexao" | "evento" | null>(null);
+  const [testeMsg, setTesteMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
+  // Último disparo (só leitura, para o selo de status no card).
+  const [ultimo, setUltimo] = useState<{ status: number | null; quando: string | null } | null>(null);
 
   const fetchConfig = useCallback(async () => {
     const { data } = await supabase
@@ -89,53 +99,169 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
       .eq("instancia_id", instanceId)
       .maybeSingle();
     if (data) {
-      setPixelId(data.pixel_id);
-      setAccessToken(data.access_token);
-      setAtivo(data.ativo ?? true);
-      setTestEventCode((data as unknown as { test_event_code?: string | null }).test_event_code ?? "");
+      const cfg = data as unknown as {
+        pixel_id?: string; access_token?: string; ativo?: boolean | null;
+        apelido?: string | null; test_event_code?: string | null;
+        moeda?: string | null; valor_padrao?: number | string | null;
+      };
+      setApelido(cfg.apelido ?? "");
+      setPixelId(cfg.pixel_id ?? "");
+      setAccessToken(cfg.access_token ?? "");
+      setAtivo(cfg.ativo ?? true);
+      setTestEventCode(cfg.test_event_code ?? "");
+      setMoeda((cfg.moeda ?? "BRL").toUpperCase());
+      setValorPadrao(String(cfg.valor_padrao ?? "0"));
       setExistingId(data.id);
     } else {
+      setApelido("");
       setPixelId("");
       setAccessToken("");
       setAtivo(true);
       setTestEventCode("");
+      setMoeda("BRL");
+      setValorPadrao("0");
       setExistingId(null);
     }
   }, [instanceId]);
 
+  // Último disparo da instância (para o selo de status).
+  const fetchUltimo = useCallback(async () => {
+    const { data } = await supabase
+      .from("log_eventos_meta")
+      .select("status_resposta, criado_em")
+      .eq("instancia_id", instanceId)
+      .order("criado_em", { ascending: false })
+      .limit(1);
+    const linha = (data as unknown as { status_resposta: number | null; criado_em: string | null }[] | null)?.[0];
+    setUltimo(linha ? { status: linha.status_resposta, quando: linha.criado_em } : { status: null, quando: null });
+  }, [instanceId]);
+
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
+  useEffect(() => { fetchUltimo(); }, [fetchUltimo]);
+
+  const pixelIdValido = /^\d{10,20}$/.test(pixelId.trim());
+  const modoTeste = testEventCode.trim().length > 0;
 
   const handleSave = async () => {
     if (!pixelId.trim() || !accessToken.trim()) {
       toast({ title: "Preencha Pixel ID e Access Token", variant: "destructive" });
       return;
     }
+    if (!pixelIdValido) {
+      toast({ title: "Pixel ID inválido", description: "Use só números (10 a 20 dígitos).", variant: "destructive" });
+      return;
+    }
+    const valorNum = Number(String(valorPadrao).replace(",", "."));
+    if (valorPadrao.trim() !== "" && (!Number.isFinite(valorNum) || valorNum < 0)) {
+      toast({ title: "Valor padrão inválido", description: "Use um número maior ou igual a zero.", variant: "destructive" });
+      return;
+    }
     setSaving(true);
+    const valores = {
+      pixel_id: pixelId.trim(),
+      access_token: accessToken.trim(),
+      ativo,
+      apelido: apelido.trim() || null,
+      test_event_code: testEventCode.trim() || null,
+      moeda: moeda.trim().toUpperCase() || "BRL",
+      valor_padrao: Number.isFinite(valorNum) && valorNum >= 0 ? valorNum : 0,
+      atualizado_em: new Date().toISOString(),
+    } as Record<string, unknown>;
     if (existingId) {
-      await supabase
-        .from("meta_config")
-        .update({ pixel_id: pixelId, access_token: accessToken, ativo, test_event_code: testEventCode.trim() || null, atualizado_em: new Date().toISOString() } as Record<string, unknown>)
-        .eq("id", existingId);
+      await supabase.from("meta_config").update(valores).eq("id", existingId);
     } else {
-      await supabase
-        .from("meta_config")
-        .insert({ instancia_id: instanceId, pixel_id: pixelId, access_token: accessToken, ativo, test_event_code: testEventCode.trim() || null } as Record<string, unknown>);
+      await supabase.from("meta_config").insert({ instancia_id: instanceId, ...valores });
     }
     toast({ title: "Configuração salva com sucesso" });
     setSaving(false);
     fetchConfig();
   };
 
+  // Testa ID + token pelo backend, sem gravar no histórico.
+  const rodarTeste = async (modo: "conexao" | "evento") => {
+    setTestando(modo);
+    setTesteMsg(null);
+    try {
+      const res = await fetch(`${(import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || ""}/api/meta-test`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-token": (import.meta.env.VITE_API_TOKEN as string | undefined) || "",
+        },
+        body: JSON.stringify({ instancia_id: instanceId, modo, test_event_code: testEventCode.trim() || undefined }),
+      });
+      const corpo = await res.json().catch(() => ({})) as { ok?: boolean; error?: string; nome?: string | null };
+      if (corpo.ok) {
+        setTesteMsg({
+          ok: true,
+          texto: modo === "conexao"
+            ? `Conexão OK — dataset ${pixelId.trim()}${corpo.nome ? ` ("${corpo.nome}")` : ""} aceitou o token.`
+            : "Evento de teste enviado — confira na aba Eventos de teste do Events Manager.",
+        });
+      } else {
+        setTesteMsg({ ok: false, texto: corpo.error || `Falha (HTTP ${res.status}).` });
+      }
+    } catch (err) {
+      setTesteMsg({ ok: false, texto: err instanceof Error ? err.message : "Erro de rede." });
+    }
+    setTestando(null);
+  };
+
+  const eventsManagerUrl = pixelIdValido
+    ? `https://business.facebook.com/events_manager2/list/dataset/${pixelId.trim()}`
+    : "https://business.facebook.com/events_manager2";
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Configuração Meta</CardTitle>
-        <CardDescription>Pixel ID e Access Token da sua conta Meta</CardDescription>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <CardTitle>
+              Configuração Meta{apelido.trim() ? ` — ${apelido.trim()}` : ""}
+            </CardTitle>
+            <CardDescription>Pixel ID e Access Token da sua conta Meta</CardDescription>
+          </div>
+          {ultimo && ultimo.quando ? (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+                ultimo.status === 200
+                  ? "bg-primary/15 text-primary"
+                  : "bg-destructive/15 text-destructive"
+              }`}
+              title={ultimo.quando ? formatDateBR(ultimo.quando) : undefined}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  ultimo.status === 200 ? "bg-primary" : "bg-destructive"
+                }`}
+              />
+              {ultimo.status === 200 ? "Último disparo OK" : `Último disparo: ${ultimo.status ?? "falha"}`}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-muted-foreground">
+              Sem disparos ainda
+            </span>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {modoTeste && (
+          <div className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+            <strong>Modo teste ativo.</strong> Os eventos vão para a aba "Eventos de teste"
+            e <strong>não otimizam a campanha</strong>. Remova o código após validar.
+          </div>
+        )}
+        <div className="space-y-2">
+          <label className="text-sm font-medium text-foreground">Nome do Pixel (apelido)</label>
+          <Input value={apelido} onChange={(e) => setApelido(e.target.value)} placeholder="Ex: PIXEL-GESSO" />
+          <p className="text-xs text-muted-foreground">Só para identificar aqui no CRM. Não é enviado à Meta.</p>
+        </div>
         <div className="space-y-2">
           <label className="text-sm font-medium text-foreground">Pixel ID</label>
           <Input value={pixelId} onChange={(e) => setPixelId(e.target.value)} placeholder="Ex: 123456789012345" />
+          {pixelId.trim() !== "" && !pixelIdValido && (
+            <p className="text-xs text-destructive">Pixel ID inválido: use só números (10 a 20 dígitos).</p>
+          )}
         </div>
         <div className="space-y-2">
           <label className="text-sm font-medium text-foreground">Access Token</label>
@@ -160,14 +286,78 @@ const ConfigSection = ({ instanceId }: { instanceId: string }) => {
           <Switch checked={ativo} onCheckedChange={setAtivo} />
           <label className="text-sm text-muted-foreground">Ativo</label>
         </div>
-        <div className="space-y-2">
-          <label className="text-sm font-medium text-foreground">Código de Teste (Events Manager)</label>
-          <Input value={testEventCode} onChange={(e) => setTestEventCode(e.target.value)} placeholder="Ex: TEST11452" />
-          <p className="text-xs text-muted-foreground">Opcional. Copie da aba "Eventos de teste" no Meta Events Manager. Remova após validar.</p>
+
+        {/* Valor dos eventos de venda: a Meta exige currency + value no Purchase. */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Moeda (vendas)</label>
+            <Input value={moeda} onChange={(e) => setMoeda(e.target.value.toUpperCase())} placeholder="BRL" maxLength={3} />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-foreground">Valor padrão (vendas)</label>
+            <Input value={valorPadrao} onChange={(e) => setValorPadrao(e.target.value)} placeholder="0" inputMode="decimal" />
+          </div>
         </div>
-        <Button onClick={handleSave} disabled={saving}>
-          <Save className="mr-1.5 h-4 w-4" /> Salvar
-        </Button>
+        <p className="-mt-2 text-xs text-muted-foreground">
+          Usado em Purchase, InitiateCheckout e AddToCart. Sem moeda e valor a Meta responde 400.
+        </p>
+
+        {/* Validação: recolhido por padrão, só abre quando há código ou teste. */}
+        <details className="rounded-lg border border-border px-3 py-2" open={modoTeste || testeMsg !== null}>
+          <summary className="cursor-pointer text-sm font-medium text-foreground">
+            Validação (código de teste)
+          </summary>
+          <div className="space-y-2 pt-3">
+            <Input value={testEventCode} onChange={(e) => setTestEventCode(e.target.value)} placeholder="Ex: TEST11452" />
+            <p className="text-xs text-muted-foreground">
+              Opcional. Copie da aba "Eventos de teste" no Meta Events Manager. Com ele
+              preenchido, os eventos <strong>não contam</strong> para a campanha. Remova após validar.
+            </p>
+            {testeMsg && (
+              <div
+                className={`rounded-lg border px-3 py-2 text-xs ${
+                  testeMsg.ok
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "border-destructive/40 bg-destructive/10 text-destructive"
+                }`}
+              >
+                {testeMsg.texto}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => rodarTeste("conexao")} disabled={testando !== null || !pixelIdValido}>
+                {testando === "conexao" ? "Testando..." : "Testar conexão"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => rodarTeste("evento")}
+                disabled={testando !== null || !pixelIdValido || !modoTeste}
+                title={!modoTeste ? "Preencha o código de teste primeiro" : undefined}
+              >
+                {testando === "evento" ? "Enviando..." : "Enviar evento de teste"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              "Testar conexão" só valida ID + token (não envia evento). "Enviar evento de
+              teste" manda um Lead fictício para a aba de teste. Nenhum dos dois grava no histórico.
+            </p>
+          </div>
+        </details>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={handleSave} disabled={saving}>
+            <Save className="mr-1.5 h-4 w-4" /> Salvar
+          </Button>
+          <a
+            href={eventsManagerUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            Abrir Events Manager
+          </a>
+        </div>
       </CardContent>
     </Card>
   );
