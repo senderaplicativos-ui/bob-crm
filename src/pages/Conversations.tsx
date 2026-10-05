@@ -30,6 +30,7 @@ interface Conversa {
   status: string | null;
   campanha: string | null;
   ultima_mensagem: string | null;
+  ultima_mensagem_em: string | null;
   atualizado_em: string | null;
   criado_em: string | null;
   is_grupo: boolean | null;
@@ -38,6 +39,14 @@ interface Conversa {
   ad_body: string | null;
   ctwa_clid: string | null;
 }
+
+// Data efetiva da conversa para filtro/ordenação: a data real da última
+// mensagem (vem do messageTimestamp do WhatsApp). Cai para criado_em quando
+// a conversa ainda não tem ultima_mensagem_em (conversas antigas, de antes
+// do campo existir). Nunca usa atualizado_em, que muda em qualquer ajuste
+// manual (mover no funil, editar origem) e poluía o filtro "Hoje".
+const dataEfetiva = (c: Conversa): string | null =>
+  c.ultima_mensagem_em || c.criado_em;
 
 const Conversations = () => {
   const { selected } = useInstance();
@@ -90,28 +99,27 @@ const Conversations = () => {
     // refeita dentro do próprio bob-crm. O backend antigo foi removido.
   };
 
+  // O filtro de período é aplicado no cliente sobre dataEfetiva (data real da
+  // última mensagem). Motivo: o backend (/api/query) não faz OR entre campos,
+  // e o fallback (ultima_mensagem_em → criado_em) exige avaliar os dois.
+  // Sem filtro de período, busca tudo ordenado por atualizado_em (rápido no
+  // banco); a ordenação final por mensagem é refeita no cliente (ver sorted).
   const fetchData = async () => {
     if (!selected) { navigate("/"); return; }
     setLoading(true);
     // Refresh regra colors too
     refreshColors();
-    const { start, end } = getDateRange(period, customStart, customEnd);
-    let query = supabase
+    const { data, error } = await supabase
       .from("conversas")
       .select("*")
       .eq("instancia_id", selected.id)
       .order("atualizado_em", { ascending: false });
 
-    if (start) query = query.gte("atualizado_em", start.toISOString());
-    if (end) query = query.lte("atualizado_em", end.toISOString());
-
-    const { data, error } = await query;
-
     if (!error && data) setConversas(data as Conversa[]);
     setLoading(false);
   };
 
-  useEffect(() => { fetchData(); }, [selected, period, customStart, customEnd]);
+  useEffect(() => { fetchData(); }, [selected]);
 
   // Auto-atualiza a lista a cada 15s enquanto a tela está aberta, para que as
   // conversas novas (que chegam pelo webhook) apareçam sem precisar clicar em
@@ -119,20 +127,17 @@ const Conversations = () => {
   useEffect(() => {
     if (!selected) return;
     const interval = setInterval(() => {
-      const { start, end } = getDateRange(period, customStart, customEnd);
-      let query = supabase
+      supabase
         .from("conversas")
         .select("*")
         .eq("instancia_id", selected.id)
-        .order("atualizado_em", { ascending: false });
-      if (start) query = query.gte("atualizado_em", start.toISOString());
-      if (end) query = query.lte("atualizado_em", end.toISOString());
-      query.then(({ data, error }) => {
-        if (!error && data) setConversas(data as Conversa[]);
-      });
+        .order("atualizado_em", { ascending: false })
+        .then(({ data, error }) => {
+          if (!error && data) setConversas(data as Conversa[]);
+        });
     }, 15000);
     return () => clearInterval(interval);
-  }, [selected, period, customStart, customEnd]);
+  }, [selected]);
 
   const isGroup = (c: Conversa) => {
     if (c.is_grupo) return true;
@@ -152,8 +157,18 @@ const Conversations = () => {
 
   const campaigns = [...new Set(conversas.map((c) => c.campanha).filter(Boolean))] as string[];
 
+  // Filtro de período pela data real da última mensagem (nunca atualizado_em).
+  const { start: periodStart, end: periodEnd } = getDateRange(period, customStart, customEnd);
+
   const filtered = conversas.filter((c) => {
     if (!showGroups && isGroup(c)) return false;
+    if (periodStart || periodEnd) {
+      const dt = dataEfetiva(c);
+      if (!dt) return false;
+      const t = new Date(dt).getTime();
+      if (periodStart && t < periodStart.getTime()) return false;
+      if (periodEnd && t > periodEnd.getTime()) return false;
+    }
     const matchesSearch = !search || c.nome?.toLowerCase().includes(search.toLowerCase()) || c.telefone?.includes(search);
     const displayStatus = getDisplayStatus(c);
     const matchesStatus = statusFilter === "Todos" || displayStatus === statusFilter;
@@ -163,7 +178,14 @@ const Conversations = () => {
   });
 
   const sorted = (() => {
-    if (!sortKey) return filtered;
+    // Ordem padrão: mensagem mais recente primeiro (data real, não edição).
+    if (!sortKey) {
+      return [...filtered].sort((a, b) => {
+        const ta = dataEfetiva(a) ? new Date(dataEfetiva(a)!).getTime() : 0;
+        const tb = dataEfetiva(b) ? new Date(dataEfetiva(b)!).getTime() : 0;
+        return tb - ta;
+      });
+    }
     const dir = sortDir === "asc" ? 1 : -1;
     const getVal = (c: Conversa): string | number => {
       if (sortKey === "origem") return (getDisplayOrigem(c) || "").toLowerCase();
